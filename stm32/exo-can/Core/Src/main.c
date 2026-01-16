@@ -21,7 +21,7 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-
+#include "can/can_app.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -97,26 +97,7 @@ int main(void)
   MX_CAN1_Init();
   MX_CAN2_Init();
   /* USER CODE BEGIN 2 */
-  CAN_FilterTypeDef filter = {0};
-  filter.FilterBank = 0;
-  filter.FilterMode = CAN_FILTERMODE_IDMASK;
-  filter.FilterScale = CAN_FILTERSCALE_32BIT;
-  filter.FilterIdHigh = 0x0000;
-  filter.FilterIdLow  = 0x0000;
-  filter.FilterMaskIdHigh = 0x0000;
-  filter.FilterMaskIdLow  = 0x0000;
-  filter.FilterFIFOAssignment = CAN_FILTER_FIFO0;
-  filter.FilterActivation = ENABLE;
-  filter.SlaveStartFilterBank = 14; // safe default even if CAN2 unused
-
-  if (HAL_CAN_ConfigFilter(&hcan1, &filter) != HAL_OK) Error_Handler();
-  if (HAL_CAN_Start(&hcan1) != HAL_OK) Error_Handler();
-
-  if (HAL_CAN_ActivateNotification(&hcan1,
-      CAN_IT_RX_FIFO0_MSG_PENDING | CAN_IT_ERROR | CAN_IT_BUSOFF | CAN_IT_LAST_ERROR_CODE) != HAL_OK)
-  {
-    Error_Handler();
-  }
+  CanApp_Init();
 
   /* USER CODE END 2 */
 
@@ -124,24 +105,7 @@ int main(void)
   /* USER CODE BEGIN WHILE */
   while (1)
   {
-	  static CAN_TxHeaderTypeDef txHeader;
-	  static uint8_t txData[8];
-	  static uint32_t txMailbox;
-	  static uint32_t last = 0;
-
-	  txHeader.IDE = CAN_ID_STD;
-	  txHeader.RTR = CAN_RTR_DATA;
-	  txHeader.StdId = 0x123;
-	  txHeader.DLC = 1;
-	  txHeader.TransmitGlobalTime = DISABLE;
-
-	  uint32_t now = HAL_GetTick();
-	  if (now - last >= 100) {
-	    last = now;
-	    txData[0]++;
-
-	    HAL_CAN_AddTxMessage(&hcan1, &txHeader, txData, &txMailbox);
-	  }
+	  CanApp_Tick();
 
     /* USER CODE END WHILE */
 
