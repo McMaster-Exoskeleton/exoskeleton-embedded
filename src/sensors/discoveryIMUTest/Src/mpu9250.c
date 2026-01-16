@@ -3,127 +3,107 @@
  *
  *  Created on: Jan 8, 2026
  *      Author: Juan Reyes
+ * 
+ * Jan 16, modifed changes:
+ * Made the code a bit more modular, still need to test code to ensure it works.
+ * 	- Added helper functions for I2C read/write
+ * 	- Added helper function for printing integers to LCD
+ *  Changes by: yug
  */
-
-#include <mpu9250.h>
-#include <main.h>
+#include "mpu9250.h"
+#include "main.h"
 #include <stdio.h>
+#include <string.h>
 
 #include "stm32f429i_discovery.h"
 #include "stm32f429i_discovery_lcd.h"
 
 extern I2C_HandleTypeDef hi2c3;
 
-void mpu9250_init()
+#define MPU_I2C_ADDR   (DEVICE_ADDRESS << 1)
+#define I2C_TIMEOUT_MS 100
+
+static inline int16_t be16_to_i16(const uint8_t msb, const uint8_t lsb)
 {
-	// Check Connection
-	HAL_StatusTypeDef ret = HAL_I2C_IsDeviceReady(&hi2c3, (DEVICE_ADDRESS <<1) + 0, 1, 100);
-	if (ret == HAL_OK)
-	{
-		BSP_LCD_SetTextColor(LCD_COLOR_GREEN);
-		BSP_LCD_DisplayStringAt(0, 50, (uint8_t*)"Secure", RIGHT_MODE);
-	}
-	else
-	{
-		BSP_LCD_SetTextColor(LCD_COLOR_RED);
-		BSP_LCD_DisplayStringAt(0, 50, (uint8_t*)"  None", RIGHT_MODE);
-	}
-
-	// Configure Accelerometer
-	uint8_t temp_data = FS_ACCEL_4G;
-	ret = HAL_I2C_Mem_Write(&hi2c3, (DEVICE_ADDRESS <<1) + 0, REG_CONFIG_ACCEL, 1, &temp_data, 1, 100);
-	if (ret == HAL_OK)
-	{
-		BSP_LCD_SetTextColor(LCD_COLOR_BLACK);
-		BSP_LCD_DisplayStringAt(0, 70, (uint8_t*)"   4G", RIGHT_MODE);
-	}
-	else
-	{
-		BSP_LCD_SetTextColor(LCD_COLOR_RED);
-		BSP_LCD_DisplayStringAt(0, 70, (uint8_t*)"Error", RIGHT_MODE);
-	}
-
-	// Configure Gyroscope
-	temp_data = FS_GYRO_500;
-	ret = HAL_I2C_Mem_Write(&hi2c3, (DEVICE_ADDRESS <<1) + 0, REG_CONFIG_GYRO, 1, &temp_data, 1, 100);
-	if (ret == HAL_OK)
-	{
-		BSP_LCD_SetTextColor(LCD_COLOR_BLACK);
-		BSP_LCD_DisplayStringAt(0, 90, (uint8_t*)"500dps", RIGHT_MODE);
-	}
-	else
-	{
-		BSP_LCD_SetTextColor(LCD_COLOR_RED);
-		BSP_LCD_DisplayStringAt(0, 90, (uint8_t*)" Error", RIGHT_MODE);
-	}
-
-	// Configure Power
-	temp_data = 0;
-	ret = HAL_I2C_Mem_Write(&hi2c3, (DEVICE_ADDRESS <<1) + 0, REG_POW_MAN, 1, &temp_data, 1, 100);
-	if (ret == HAL_OK)
-	{
-		BSP_LCD_SetTextColor(LCD_COLOR_GREEN);
-		BSP_LCD_DisplayStringAt(0, 110, (uint8_t*)"On", RIGHT_MODE);
-		BSP_LCD_SetTextColor(LCD_COLOR_BLACK);
-	}
-	else
-	{
-		BSP_LCD_SetTextColor(LCD_COLOR_RED);
-		BSP_LCD_DisplayStringAt(0, 110, (uint8_t*)" Error", RIGHT_MODE);
-		BSP_LCD_SetTextColor(LCD_COLOR_BLACK);
-	}
-
+    return (int16_t)((msb << 8) | lsb);
 }
 
-void mpu9250_read()
+static void lcd_status(uint16_t y, const char *ok_text, const char *err_text, HAL_StatusTypeDef st,
+                       uint32_t ok_color, uint32_t err_color)
 {
-	// READ ACCEL
-	uint8_t data[6];
-	char xText[20];
-	char yText[20];
-	char zText[20];
+    BSP_LCD_SetTextColor((st == HAL_OK) ? ok_color : err_color);
+    BSP_LCD_DisplayStringAt(0, y, (uint8_t *)((st == HAL_OK) ? ok_text : err_text), RIGHT_MODE);
+    BSP_LCD_SetTextColor(LCD_COLOR_BLACK);
+}
 
-	int16_t x_accel;
-	int16_t y_accel;
-	int16_t z_accel;
+static HAL_StatusTypeDef i2c_write_u8(uint8_t reg, uint8_t val)
+{
+    return HAL_I2C_Mem_Write(&hi2c3, MPU_I2C_ADDR, reg, I2C_MEMADD_SIZE_8BIT, &val, 1, I2C_TIMEOUT_MS);
+}
 
-	int16_t x_gyro;
-	int16_t y_gyro;
-	int16_t z_gyro;
+static HAL_StatusTypeDef i2c_read(uint8_t reg, uint8_t *buf, uint16_t len)
+{
+    return HAL_I2C_Mem_Read(&hi2c3, MPU_I2C_ADDR, reg, I2C_MEMADD_SIZE_8BIT, buf, len, I2C_TIMEOUT_MS);
+}
 
-	// Get Accel Data
-	HAL_I2C_Mem_Read(&hi2c3, (DEVICE_ADDRESS <<1) + 1, REG_ACCEL_DATA, 1, data, 6, 100);
-	x_accel = ((int16_t)data[0] << 8) + data[1];
-	y_accel = ((int16_t)data[2] << 8) + data[3];
-	z_accel = ((int16_t)data[4] << 8) + data[5];
+static void lcd_print_int_at(uint16_t y, int16_t value)
+{
+    char s[16];
+    snprintf(s, sizeof(s), "%d", (int)value);
 
-	// Get Gyro Data
-	HAL_I2C_Mem_Read(&hi2c3, (DEVICE_ADDRESS <<1) + 1, REG_GYRO_DATA, 1, data, 6, 100);
-	x_gyro = ((int16_t)data[0] << 8) + data[1];
-	y_gyro = ((int16_t)data[2] << 8) + data[3];
-	z_gyro = ((int16_t)data[4] << 8) + data[5];
+    BSP_LCD_DisplayStringAt(0, y, (uint8_t*)"        ", RIGHT_MODE);
+    BSP_LCD_DisplayStringAt(0, y, (uint8_t*)s, RIGHT_MODE);
+}
 
-	sprintf(xText, "%d", x_accel);
-	sprintf(yText, "%d", y_accel);
-	sprintf(zText, "%d", z_accel);
+void mpu9250_init(void)
+{
+    HAL_StatusTypeDef st = HAL_I2C_IsDeviceReady(&hi2c3, MPU_I2C_ADDR, 1, I2C_TIMEOUT_MS);
+    lcd_status(50, "Secure", "  None", st, LCD_COLOR_GREEN, LCD_COLOR_RED);
 
-	BSP_LCD_DisplayStringAt(0, 165, (uint8_t*)"        ", RIGHT_MODE);
-	BSP_LCD_DisplayStringAt(0, 185, (uint8_t*)"        ", RIGHT_MODE);
-	BSP_LCD_DisplayStringAt(0, 205, (uint8_t*)"        ", RIGHT_MODE);
+    st = i2c_write_u8(REG_CONFIG_ACCEL, FS_ACCEL_4G);
+    lcd_status(70, "   4G", "Error", st, LCD_COLOR_BLACK, LCD_COLOR_RED);
 
-	BSP_LCD_DisplayStringAt(0, 165, (uint8_t*)xText, RIGHT_MODE);
-	BSP_LCD_DisplayStringAt(0, 185, (uint8_t*)yText, RIGHT_MODE);
-	BSP_LCD_DisplayStringAt(0, 205, (uint8_t*)zText, RIGHT_MODE);
+    st = i2c_write_u8(REG_CONFIG_GYRO, FS_GYRO_500);
+    lcd_status(90, "500dps", " Error", st, LCD_COLOR_BLACK, LCD_COLOR_RED);
 
-	sprintf(xText, "%d", x_gyro);
-	sprintf(yText, "%d", y_gyro);
-	sprintf(zText, "%d", z_gyro);
+    st = i2c_write_u8(REG_POW_MAN, 0x00);
+    lcd_status(110, "On", " Error", st, LCD_COLOR_GREEN, LCD_COLOR_RED);
+}
 
-	BSP_LCD_DisplayStringAt(0, 235, (uint8_t*)"        ", RIGHT_MODE);
-	BSP_LCD_DisplayStringAt(0, 255, (uint8_t*)"        ", RIGHT_MODE);
-	BSP_LCD_DisplayStringAt(0, 275, (uint8_t*)"        ", RIGHT_MODE);
+void mpu9250_read(void)
+{
+    uint8_t buf[6];
+    HAL_StatusTypeDef st;
 
-	BSP_LCD_DisplayStringAt(0, 235, (uint8_t*)xText, RIGHT_MODE);
-	BSP_LCD_DisplayStringAt(0, 255, (uint8_t*)yText, RIGHT_MODE);
-	BSP_LCD_DisplayStringAt(0, 275, (uint8_t*)zText, RIGHT_MODE);
+    int16_t ax, ay, az;
+    int16_t gx, gy, gz;
+
+	st = i2c_read(REG_ACCEL_DATA, buf, 6);
+    if (st != HAL_OK) {
+        lcd_status(165, "ACC OK", "ACC ERR", st, LCD_COLOR_BLACK, LCD_COLOR_RED);
+        return;
+    }
+
+    ax = be16_to_i16(buf[0], buf[1]);
+    ay = be16_to_i16(buf[2], buf[3]);
+    az = be16_to_i16(buf[4], buf[5]);
+
+    lcd_print_int_at(165, ax);
+    lcd_print_int_at(185, ay);
+    lcd_print_int_at(205, az);
+
+    
+    st = i2c_read(REG_GYRO_DATA, buf, 6);
+    if (st != HAL_OK) {
+        lcd_status(235, "GYR OK", "GYR ERR", st, LCD_COLOR_BLACK, LCD_COLOR_RED);
+        return;
+    }
+
+    gx = be16_to_i16(buf[0], buf[1]);
+    gy = be16_to_i16(buf[2], buf[3]);
+    gz = be16_to_i16(buf[4], buf[5]);
+
+    lcd_print_int_at(235, gx);
+    lcd_print_int_at(255, gy);
+    lcd_print_int_at(275, gz);
 }
