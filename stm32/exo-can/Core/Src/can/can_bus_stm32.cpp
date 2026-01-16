@@ -27,16 +27,16 @@ bool CanBusStm32::init(CAN_HandleTypeDef* hcan) {
                    CAN_IT_ERROR |
                    CAN_IT_BUSOFF |
                    CAN_IT_LAST_ERROR_CODE;
-
+  // Activate interrupts
   if (HAL_CAN_ActivateNotification(hcan_, notif) != HAL_OK) return false;
 
   return true;
 }
 
 bool CanBusStm32::sendStd(uint16_t std_id, const uint8_t* data, uint8_t dlc) {
-  if (!hcan_) return false;
-  if (std_id > 0x7FF) return false;
-  if (dlc > 8) return false;
+  if (!hcan_) return false; // must be initialized
+  if (std_id > 0x7FF) return false; // must be lower than 11 bits
+  if (dlc > 8) return false; // must be lower than 8 bytes
 
   CAN_TxHeaderTypeDef hdr = {};
   hdr.IDE = CAN_ID_STD;
@@ -45,14 +45,17 @@ bool CanBusStm32::sendStd(uint16_t std_id, const uint8_t* data, uint8_t dlc) {
   hdr.DLC = dlc;
   hdr.TransmitGlobalTime = DISABLE;
 
+  // queue frame to hardware mailbox to be sent
   uint32_t mailbox = 0;
   return (HAL_CAN_AddTxMessage(hcan_, &hdr, const_cast<uint8_t*>(data), &mailbox) == HAL_OK);
 }
 
+// read software buffer
 bool CanBusStm32::recv(CanFrame& out) {
   return rxq_.pop(out);
 }
 
+// drain hardware FIFO, fill software buffer
 void CanBusStm32::onRxFifo0Pending() {
   if (!hcan_) return;
 
