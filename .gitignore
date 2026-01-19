@@ -39,3 +39,15 @@
 
 # debug information files
 *.dwo
+
+**/Debug/
+**/Release/
+**/.metadata/
+**/*.o
+**/*.d
+**/*.elf
+**/*.map
+**/*.list
+**/*.hex
+**/*.bin
+
