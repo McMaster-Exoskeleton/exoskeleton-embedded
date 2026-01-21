@@ -143,8 +143,8 @@ CAN RX ← Transceiver             CAN RX ← Transceiver
 ```
 
 ### Nucleo-F446RE Default CAN Pins:
-- **CAN1_TX**: PB9 or PA12 (check .ioc file for actual configuration)
-- **CAN1_RX**: PB8 or PA11 (check .ioc file for actual configuration)
+- **CAN1_TX**: PA12
+- **CAN1_RX**: PA11
 
 ## Code Key Points
 
