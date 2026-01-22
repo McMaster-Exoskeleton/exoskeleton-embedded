@@ -1,7 +1,0 @@
-../Core/Inc/can/ring_buffer.hpp:12:7:bool CanRxRingBuffer::push(const CanFrame&)	16	static
-../Core/Inc/can/ring_buffer.hpp:20:7:bool CanRxRingBuffer::pop(CanFrame&)	16	static
-../Core/Inc/can/ring_buffer.hpp:29:11:uint16_t CanRxRingBuffer::size() const	16	static
-../Core/Src/can/can_app.cpp:15:17:void CanApp_PushUartByte(uint8_t)	40	static
-../Core/Src/can/can_app.cpp:24:6:void CanApp_Init()	8	static
-../Core/Src/can/can_app.cpp:28:6:void CanApp_Tick()	48	static
-../Core/Src/can/can_app.cpp:46:17:void HAL_CAN_RxFifo0MsgPendingCallback(CAN_HandleTypeDef*)	16	static

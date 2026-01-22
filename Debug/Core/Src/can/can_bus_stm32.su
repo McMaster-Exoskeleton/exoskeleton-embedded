@@ -1,6 +1,0 @@
-../Core/Inc/can/ring_buffer.hpp:12:7:bool CanRxRingBuffer::push(const CanFrame&)	16	static
-../Core/Inc/can/ring_buffer.hpp:20:7:bool CanRxRingBuffer::pop(CanFrame&)	16	static
-../Core/Src/can/can_bus_stm32.cpp:4:6:bool CanBusStm32::init(CAN_HandleTypeDef*)	64	static
-../Core/Src/can/can_bus_stm32.cpp:36:6:bool CanBusStm32::sendStd(uint16_t, const uint8_t*, uint8_t)	56	static
-../Core/Src/can/can_bus_stm32.cpp:54:6:bool CanBusStm32::recv(CanFrame&)	16	static
-../Core/Src/can/can_bus_stm32.cpp:59:6:void CanBusStm32::onRxFifo0Pending()	80	static
