@@ -28,7 +28,7 @@ typedef enum
 
 static SensorState_t currentState = SENSOR_STATE_LOST;
 
-static void LCD_Print(uint16_t y_pos, char *label, uint16_t color, uint8_t status)
+static void LCD_Print(uint16_t y_pos, char *label, uint8_t status, uint32_t color)
 {
 	if (status == HAL_OK)
 	{
@@ -82,7 +82,13 @@ void mpu9250_read()
 		{
 			currentState = SENSOR_STATE_CONNECTED;
 
-			LCD_Print(50, (uint8_t *)"Secure", LCD_COLOR_GREEN);
+			LCD_Print(50, "Secure", HAL_OK, LCD_COLOR_GREEN);
+		}
+		else
+		{
+			LCD_Print(50, "Check", HAL_ERROR, LCD_COLOR_RED);
+
+			HAL_Delay(50);
 		}
 	}
 	else
@@ -116,6 +122,8 @@ void mpu9250_read()
 		x_gyro = ((int16_t)data[8] << 8) + data[9];
 		y_gyro = ((int16_t)data[10] << 8) + data[11];
 		z_gyro = ((int16_t)data[12] << 8) + data[13];
+
+		BSP_LCD_SetTextColor(LCD_COLOR_BLACK);
 
 		// Print Acceleration Measurements
 		sprintf(text, "%6d", x_accel);
