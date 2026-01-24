@@ -3,6 +3,9 @@
  *
  *  Created on: Jan 8, 2026
  *      Author: Juan Reyes
+ * 
+ * Modified on: Jan 23, 2026
+ * 		By: Majock Bim, Hao Yan
  */
 
 #include <mpu9250.h>
