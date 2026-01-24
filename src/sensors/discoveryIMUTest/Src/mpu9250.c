@@ -18,6 +18,12 @@
 #define REG_GYRO_CONFIG 0x1B
 #define REG_ACCEL_CONFIG 0x1C
 
+#define GRAVITY 9.80665f
+
+// https://www.st.com/resource/en/datasheet/lsm6ds3tr-c.pdf
+#define LIN_ACCEL_SENSITIVITY_4G 0.000122f // g/LSB
+#define ANG_VEL_SENSITIVITY_500DPS 0.0175f // dps/LSB
+
 extern I2C_HandleTypeDef hi2c3;
 
 typedef enum
@@ -28,7 +34,7 @@ typedef enum
 
 static SensorState_t currentState = SENSOR_STATE_LOST;
 
-static void LCD_Print(uint16_t y_pos, char *label, uint16_t color, uint8_t status)
+static void LCD_Print(uint16_t y_pos, char *label, uint8_t status, uint32_t color)
 {
 	if (status == HAL_OK)
 	{
@@ -82,7 +88,13 @@ void mpu9250_read()
 		{
 			currentState = SENSOR_STATE_CONNECTED;
 
-			LCD_Print(50, (uint8_t *)"Secure", LCD_COLOR_GREEN);
+			LCD_Print(50, "Secure", HAL_OK, LCD_COLOR_GREEN);
+		}
+		else
+		{
+			LCD_Print(50, "Check", HAL_ERROR, LCD_COLOR_RED);
+
+			HAL_Delay(50);
 		}
 	}
 	else
@@ -117,20 +129,44 @@ void mpu9250_read()
 		y_gyro = ((int16_t)data[10] << 8) + data[11];
 		z_gyro = ((int16_t)data[12] << 8) + data[13];
 
-		// Print Acceleration Measurements
-		sprintf(text, "%6d", x_accel);
+		BSP_LCD_SetTextColor(LCD_COLOR_BLACK);
+
+		// Unit Conversions
+		float x_accel_ms2 = (x_accel * LIN_ACCEL_SENSITIVITY_4G) * GRAVITY;
+		float y_accel_ms2 = (y_accel * LIN_ACCEL_SENSITIVITY_4G) * GRAVITY;
+		float z_accel_ms2 = (z_accel * LIN_ACCEL_SENSITIVITY_4G) * GRAVITY;
+
+		float x_gyro_dps = x_gyro * ANG_VEL_SENSITIVITY_500DPS;
+		float y_gyro_dps = y_gyro * ANG_VEL_SENSITIVITY_500DPS;
+		float z_gyro_dps = z_gyro * ANG_VEL_SENSITIVITY_500DPS;
+
+		// Low Pass Filter (y[n] = a*x[n] + (1-a)*y[n-1])
+		float alpha = 0.1f; // lower alpha = more smoothing (0.0-1.0)
+		static float filt_ax = 0, filt_ay = 0, filt_az = 0;
+		static float filt_gx = 0, filt_gy = 0, filt_gz = 0;
+
+		filt_ax = (alpha * x_accel_ms2) + (1.0f - alpha) * filt_ax;
+		filt_ay = (alpha * y_accel_ms2) + (1.0f - alpha) * filt_ay;
+		filt_az = (alpha * z_accel_ms2) + (1.0f - alpha) * filt_az;
+
+		filt_gx = (alpha * x_gyro_dps) + (1.0f - alpha) * filt_gx;
+		filt_gy = (alpha * y_gyro_dps) + (1.0f - alpha) * filt_gy;
+		filt_gz = (alpha * z_gyro_dps) + (1.0f - alpha) * filt_gz;
+
+		// Print Acceleration Measurements (m/s^2)
+		sprintf(text, "%6.2f", filt_ax);
 		BSP_LCD_DisplayStringAt(0, 165, (uint8_t *)text, RIGHT_MODE);
-		sprintf(text, "%6d", y_accel);
+		sprintf(text, "%6.2f", filt_ay);
 		BSP_LCD_DisplayStringAt(0, 185, (uint8_t *)text, RIGHT_MODE);
-		sprintf(text, "%6d", z_accel);
+		sprintf(text, "%6.2f", filt_az);
 		BSP_LCD_DisplayStringAt(0, 205, (uint8_t *)text, RIGHT_MODE);
 
-		// Print Gyroscope Measurements
-		sprintf(text, "%6d", x_gyro);
+		// Print Gyroscope Measurements (rad/s)
+		sprintf(text, "%6.2f", filt_gx);
 		BSP_LCD_DisplayStringAt(0, 235, (uint8_t *)text, RIGHT_MODE);
-		sprintf(text, "%6d", y_gyro);
+		sprintf(text, "%6.2f", filt_gy);
 		BSP_LCD_DisplayStringAt(0, 255, (uint8_t *)text, RIGHT_MODE);
-		sprintf(text, "%6d", z_gyro);
+		sprintf(text, "%6.2f", filt_gz);
 		BSP_LCD_DisplayStringAt(0, 275, (uint8_t *)text, RIGHT_MODE);
 	}
 }
