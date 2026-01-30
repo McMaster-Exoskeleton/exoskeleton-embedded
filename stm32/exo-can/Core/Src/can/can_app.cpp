@@ -1,37 +1,60 @@
 #include "can/can_app.h"
 #include "can/can_bus_stm32.hpp"
-#include "main.h"   // for pin definitions and CAN handle externs
-
+#include "can/can_protocol.hpp"
+#include "main.h"	// for pin definitions and CAN handle externs
 #include <cstdint>
 
 extern CAN_HandleTypeDef hcan1;
 
 static CanBusStm32 g_can;
 
+// Set per-board (compile-time for now)
+static constexpr uint8_t ThisNode = 1; // change to 2 on the other board
+static constexpr uint8_t PeerNode = 2; // the node you wanna talk to
+//add more nodes?
+
+
+
 // Initialize CAN
 void CanApp_Init(void) {
+	static_assert(canproto::IsValidNode(kThisNode), "Invalid node id");
 
-	(void)g_can.init(&hcan1);
+	const uint16_t accept_ids[] = {
+	    canproto::CmdId(ThisNode),
+	    canproto::HbId(ThisNode),
+	};
+
+
+	  (void)g_can.init(&hcan1, accept_ids, static_cast<uint8_t>(sizeof(accept_ids)/sizeof(accept_ids[0])));
+
 }
 
-// Send 0x123 every 100ms, the data is the counter of frames sent so far
 void CanApp_Tick(void) {
+	  // Send a command frame to the peer every 100 ms
+	  static uint32_t last_ms = 0;
+	  static uint8_t seq = 0;
 
-	static uint32_t last_ms = 0;
-	static uint8_t ctr = 0;
+	  const uint32_t now = HAL_GetTick();
+	  if (now - last_ms >= 100) {
+		  last_ms = now;
 
-	uint32_t now = HAL_GetTick();
-	if (now - last_ms >= 100) {
-		last_ms = now;
-		uint8_t data[1] = { ctr++ };
-		(void)g_can.sendStd(0x123, data, 1);
-	}
+		  canproto::CommandPayload cmd{};
+		  cmd.pos_q = 0;
+		  cmd.vel_q = 0;
+		  cmd.tau_q = 0;
+		  cmd.mode  = static_cast<uint8_t>(canproto::ControlMode::Disabled);
+		  cmd.seq   = seq++;
 
-	// Process any received frames (toggle LED per frame)
-	CanFrame f;
-	while (g_can.recv(f)) {
-		HAL_GPIO_TogglePin(LD2_GPIO_Port, LD2_Pin);
-	}
+		  (void)g_can.sendStd(canproto::CmdId(PeerNode),
+		                          reinterpret_cast<const uint8_t*>(&cmd),
+		                          sizeof(cmd));
+	  }
+
+	  // Process any received frames (toggle LED per frame)
+	  CanFrame f;
+	  while (g_can.recv(f)) {
+		  HAL_GPIO_TogglePin(LD2_GPIO_Port, LD2_Pin);
+	  }
 }
 
 // HAL calls this callback whenever RX FIFO0 has a message pending
