@@ -111,11 +111,18 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
+
+	// ALWAYS read values
+	mpu9250_read();
+
     if (cmd_ready)
     {
       cmd_ready = 0;
       process_command();
     }
+
+    // Add a small delay
+    HAL_Delay(10);
   }
   /* USER CODE END 3 */
 }
@@ -303,7 +310,6 @@ static void process_command(void)
 
   if (strcmp((char*)rx_buffer, "READ") == 0)
   {
-    mpu9250_read();
 
     len = sprintf((char*)tx_buffer,
         "AX:%.2f AY:%.2f AZ:%.2f GX:%.2f GY:%.2f GZ:%.2f\r\n",
