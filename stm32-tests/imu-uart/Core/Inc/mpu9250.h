@@ -42,6 +42,10 @@ typedef struct
 	int16_t x;
 	int16_t y;
 	int16_t z;
+
+	float filt_x;
+	float filt_y;
+	float filt_z;
 } AxisData_t;
 
 typedef struct

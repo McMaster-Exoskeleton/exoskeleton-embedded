@@ -111,11 +111,18 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
+
+	// ALWAYS read values
+	mpu9250_read();
+
     if (cmd_ready)
     {
       cmd_ready = 0;
       process_command();
     }
+
+    // Add a small delay
+    HAL_Delay(10);
   }
   /* USER CODE END 3 */
 }
@@ -303,11 +310,11 @@ static void process_command(void)
 
   if (strcmp((char*)rx_buffer, "READ") == 0)
   {
-    mpu9250_read();
+
     len = sprintf((char*)tx_buffer,
-        "AX:%d AY:%d AZ:%d GX:%d GY:%d GZ:%d\r\n",
-        imu->accel.x, imu->accel.y, imu->accel.z,
-        imu->gyro.x, imu->gyro.y, imu->gyro.z);
+        "AX:%.2f AY:%.2f AZ:%.2f GX:%.2f GY:%.2f GZ:%.2f\r\n",
+        imu->accel.filt_x, imu->accel.filt_y, imu->accel.filt_z,
+        imu->gyro.filt_x, imu->gyro.filt_y, imu->gyro.filt_z);
     HAL_UART_Transmit(&huart2, tx_buffer, len, 100);
   }
   else if (strcmp((char*)rx_buffer, "STATUS") == 0)
