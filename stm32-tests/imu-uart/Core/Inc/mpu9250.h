@@ -11,25 +11,25 @@
 #include "stm32f4xx_hal.h"
 #include <stdint.h>
 
-#define DEVICE_ADDRESS		0b1101000
-#define MPU9250_ADDRESS		(DEVICE_ADDRESS << 1)
+#define DEVICE_ADDRESS 0b1101000
+#define MPU9250_ADDRESS (DEVICE_ADDRESS << 1)
 
-#define FS_GYRO_250			0b00000000
-#define FS_GYRO_500			0b00001000
-#define FS_GYRO_1000		0b00010000
-#define FS_GYRO_2000		0b00011000
+#define FS_GYRO_250 0b00000000
+#define FS_GYRO_500 0b00001000
+#define FS_GYRO_1000 0b00010000
+#define FS_GYRO_2000 0b00011000
 
-#define FS_ACCEL_2G			0b00000000
-#define FS_ACCEL_4G			0b00001000
-#define FS_ACCEL_8G			0b00010000
-#define FS_ACCEL_16G		0b00011000
+#define FS_ACCEL_2G 0b00000000
+#define FS_ACCEL_4G 0b00001000
+#define FS_ACCEL_8G 0b00010000
+#define FS_ACCEL_16G 0b00011000
 
-#define REG_CONFIG_GYRO		27
-#define REG_CONFIG_ACCEL	28
-#define REG_POW_MAN			107
+#define REG_CONFIG_GYRO 27
+#define REG_CONFIG_ACCEL 28
+#define REG_POW_MAN 107
 
-#define REG_ACCEL_DATA		59
-#define REG_GYRO_DATA		67
+#define REG_ACCEL_DATA 59
+#define REG_GYRO_DATA 67
 
 typedef enum
 {
@@ -60,8 +60,9 @@ typedef struct
 
 void mpu9250_init_driver(I2C_HandleTypeDef *hi2c);
 uint8_t mpu9250_check_connection(void);
+void mpu9250_calibrate(void);
 uint8_t mpu9250_configure(void);
 uint8_t mpu9250_read(void);
-MPU9250_Data_t* mpu9250_get_data(void);
+MPU9250_Data_t *mpu9250_get_data(void);
 
 #endif /* INC_MPU9250_H_ */

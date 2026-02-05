@@ -61,11 +61,48 @@ uint8_t mpu9250_check_connection(void)
 	return 0;
 }
 
+void mpu9250_calibrate(void) {
+	if (!calibrated)
+    {
+		uint8_t data[14];
+
+		long total_gx_raw = 0;
+		long total_gy_raw = 0;
+		long total_gz_raw = 0;
+
+		int sample_num = 100;
+
+		for (int i = 0; i < sample_num; ++i)
+		{
+			HAL_I2C_Mem_Read(_hi2c, MPU9250_ADDRESS, REG_ACCEL_DATA, 1, data, 14, 100);
+
+			total_gx += ((int16_t)data[8] << 8) + data[9];
+			total_gy += ((int16_t)data[10] << 8) + data[11];
+			total_gz += ((int16_t)data[12] << 8) + data[13];
+
+			HAL_Delay(3);
+		}
+
+		offset_gx = (float)(total_gx / sample_num) * ANG_VEL_SENSITIVITY_500DPS;
+		offset_gy = (float)(total_gy / sample_num) * ANG_VEL_SENSITIVITY_500DPS;
+		offset_gz = (float)(total_gz / sample_num) * ANG_VEL_SENSITIVITY_500DPS;
+
+		// TODO: Add accelerometer calibration, otherwise assume factory
+
+		offset_ax = 0;
+		offset_ay = 0;
+		offset_az = 0;
+
+		calibrated = 1;
+	}
+}
+
 uint8_t mpu9250_configure(void)
 {
 	uint8_t temp_data;
 	HAL_StatusTypeDef ret;
 
+	// Configure Power
 	temp_data = 0x00;
 	ret = HAL_I2C_Mem_Write(_hi2c, MPU9250_ADDRESS, REG_POW_MAN, 1, &temp_data, 1, 100);
 
@@ -145,52 +182,10 @@ uint8_t mpu9250_read(void)
 	x_accel = ((int16_t)data[0] << 8) + data[1];
 	y_accel = ((int16_t)data[2] << 8) + data[3];
 	z_accel = ((int16_t)data[4] << 8) + data[5];
+
 	x_gyro = ((int16_t)data[8] << 8) + data[9];
 	y_gyro = ((int16_t)data[10] << 8) + data[11];
 	z_gyro = ((int16_t)data[12] << 8) + data[13];
-
-	// Calibrate IMU by calculating offset
-	if (!calibrated)
-	{
-
-		float total_off_gx = 0, total_off_gy = 0, total_off_gz = 0;
-		float total_off_ax = 0, total_off_ay = 0, total_off_az = 0;
-
-		int sample_num = 100;
-
-		for (int i = 0; i < sample_num; ++i)
-		{
-			HAL_I2C_Mem_Read(_hi2c, MPU9250_ADDRESS, REG_ACCEL_DATA, 1, data, 14, 100);
-
-			int16_t curr_off_ax = ((int16_t)data[0] << 8) + data[1];
-			int16_t curr_off_ay = ((int16_t)data[2] << 8) + data[3];
-			int16_t curr_off_az = ((int16_t)data[4] << 8) + data[5];
-
-			int16_t curr_off_gx = ((int16_t)data[8] << 8) + data[9];
-			int16_t curr_off_gy = ((int16_t)data[10] << 8) + data[11];
-			int16_t curr_off_gz = ((int16_t)data[12] << 8) + data[13];
-
-			total_off_ax += (LIN_ACCEL_SENSITIVITY_4G * curr_off_ax) * GRAVITY;
-			total_off_ay += (LIN_ACCEL_SENSITIVITY_4G * curr_off_ay) * GRAVITY;
-			total_off_az += (LIN_ACCEL_SENSITIVITY_4G * curr_off_az) * GRAVITY;
-
-			total_off_gx += (ANG_VEL_SENSITIVITY_500DPS * curr_off_gx);
-			total_off_gy += (ANG_VEL_SENSITIVITY_500DPS * curr_off_gy);
-			total_off_gz += (ANG_VEL_SENSITIVITY_500DPS * curr_off_gz);
-
-			HAL_Delay(3);
-		}
-
-		offset_ax = total_off_ax / sample_num;
-		offset_ay = total_off_ay / sample_num;
-		offset_az = GRAVITY - (total_off_az / sample_num);
-
-		offset_gx = total_off_gx / sample_num;
-		offset_gy = total_off_gy / sample_num;
-		offset_gz = total_off_gz / sample_num;
-
-		calibrated = 1;
-	}
 
 	// Unit Conversions + Offset Application
 	float x_accel_ms2 = (x_accel * LIN_ACCEL_SENSITIVITY_4G) * GRAVITY - offset_ax;
@@ -211,6 +206,7 @@ uint8_t mpu9250_read(void)
 
 	imu_data.accel.x = x_accel;
 	imu_data.accel.y = y_accel;
+	imu_data.accel.z = z_accel;
 
 	return 1;
 }
