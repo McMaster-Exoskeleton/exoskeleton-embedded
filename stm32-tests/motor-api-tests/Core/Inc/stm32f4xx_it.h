@@ -57,7 +57,7 @@ void PendSV_Handler(void);
 void SysTick_Handler(void);
 void USART2_IRQHandler(void);
 /* USER CODE BEGIN EFP */
-
+void CAN1_RX0_IRQHandler(void);
 /* USER CODE END EFP */
 
 #ifdef __cplusplus

@@ -31,7 +31,8 @@ extern "C" {
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-#include "can/can_app.h"
+#include "can/ak70_9.h"
+#include "can/can_bus.h"
 /* USER CODE END Includes */
 
 /* Exported types ------------------------------------------------------------*/
