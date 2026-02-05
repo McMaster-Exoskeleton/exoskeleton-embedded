@@ -1,184 +1,265 @@
-# STM32 CAN Bus Communication Test
+# exo-can SETUP
 
-## Project Overview
+This document explains how to build, flash, and validate the STM32 CAN bring up plus the current C++ CAN module integration on two NUCLEO F446RE boards using an SN65HVD230 transceiver.
 
-This CubeIDE project implements CAN bus communication testing between two STM32 Nucleo-F446RE boards. Each board has a CAN transceiver connected via CAN TX/RX pins, with the transceivers' HIGH and LOW lines connected together and terminated with 120Ω resistors.
+## Scope
 
-## Hardware Configuration
+* Target board: NUCLEO F446RE
+* Peripheral: CAN1
+* Pins: PA11 (CAN1_RX), PA12 (CAN1_TX)
+* Transceiver: SN65HVD230DR (3.3 V)
+* Current test behavior
+  * Each board periodically transmits a command frame to a peer node ID
+  * Each board toggles LD2 when it receives an allowed CAN frame
+* Filtering
+  * Hardware filters are configured using an allowlist of standard IDs (node specific), not accept all
 
-### Per Board Setup:
-- **Microcontroller**: Nucleo-F446RE
-- **CAN Transceiver**: Connected to CAN1 TX/RX pins
-- **Termination**: 120Ω resistors on each transceiver's HIGH and LOW ports
-- **UART**: USART2 on PA2(TX) and PA3(RX) at 115200 baud
-- **LED**: LD2 on PA5 (onboard LED)
+## Prerequisites
 
-### CAN Bus Configuration:
-- **CAN1**: 500 kbps (Prescaler=6, TimeSeg1=11TQ, TimeSeg2=2TQ)
-- **CAN2**: Initialized but not used in current code
-- **Filter**: Accept all CAN messages (mask 0x0000)
+### Software
 
-## Current Implementation
+* STM32CubeIDE installed (1.19.x or similar)
+* Git installed (Git Bash on Windows is fine)
 
-### What the Code Does:
+### Hardware
 
-**File Structure:**
-- `Core/Src/main.c` - Main program and peripheral initialization
-- `Core/Src/can/can_app.cpp` - Application logic (lines 11-38)
-- `Core/Src/can/can_bus_stm32.cpp` - CAN driver wrapper
-- `Core/Inc/can/can_frame.hpp` - CAN frame data structure
-- `Core/Inc/can/ring_buffer.hpp` - RX buffer (32 frame capacity)
+* 2x NUCLEO F446RE boards
+* 2x SN65HVD230 transceiver modules (or equivalent)
+* Twisted pair wiring for CANH and CANL
+* 2x 120 ohm termination resistors (one at each physical end of the bus)
+* 2x USB cables for flashing both boards
 
-**Functionality:**
+## Repo setup
 
-1. **Automatic CAN Transmission** (can_app.cpp:17-26)
-   - Sends CAN message every 100ms
-   - CAN ID: `0x123` (standard ID)
-   - Data: Single byte counter (0, 1, 2, 3...)
-   - Increments automatically
+1. Clone the repository and checkout the branch
 
-2. **CAN Reception** (can_app.cpp:28-32)
-   - Receives CAN messages via interrupt callback
-   - Stores frames in ring buffer
-   - Toggles onboard LED (LD2) for each received message
+   ```bash
+   git clone https://github.com/McMaster-Exoskeleton/exoskeleton-embedded.git
+   cd exoskeleton-embedded
+   git checkout canbus-implementation
+   ```
 
-### Current Behavior with Two Boards:
+2. Pull latest changes
 
-| Board 1 | CAN Bus | Board 2 |
-|---------|---------|---------|
-| Sends 0x123 counter every 100ms → | → | Receives & blinks LED |
-| Receives & blinks LED | ← | ← Sends 0x123 counter every 100ms |
+   ```bash
+   git pull
+   ```
 
-**Result:** Both boards continuously transmit and both LEDs blink when receiving from each other.
+## Open the STM32 project in STM32CubeIDE
 
-## What's Missing for Full UART-CAN Bridge
+Project path in the repo:
 
-### Intended Goal:
-```
-Computer → UART → Board 1 → CAN → Board 2 → UART → Computer
-```
+* `stm32/exo-can/`
 
-### Missing Components:
+In CubeIDE:
 
-| Feature | Status | Notes |
-|---------|--------|-------|
-| UART RX Handler | ❌ Not implemented | Need to receive data from computer |
-| UART → CAN Bridge | ❌ Not implemented | Forward UART data as CAN messages |
-| CAN → UART Bridge | ❌ Not implemented | Forward CAN messages to UART |
-| Message Protocol | ❌ Not implemented | Define UART/CAN data packaging |
+1. File -> Open Projects from File System… (or Import -> Existing Projects into Workspace)
+2. Select directory: `exoskeleton-embedded/stm32/exo-can`
+3. Import it into your workspace
 
-**Currently:** Boards communicate via CAN but do NOT interact with computer via UART.
+Notes:
 
-## Testing the Current Setup
+* Prefer building the project that lives inside the repo folder, so changes are version controlled.
+* Avoid editing a detached copy in a separate CubeIDE workspace directory unless you intentionally mirror changes back into the repo.
 
-### Prerequisites:
-- Two Nucleo-F446RE boards programmed with this code
-- CAN transceivers connected to each board
-- HIGH and LOW lines connected between transceivers
-- 120Ω termination resistors on both ends
-- USB cables to power both boards
+## Build
 
-### Test Procedure:
+In CubeIDE:
 
-#### Step 1: Hardware Connection
-1. Connect Board 1's CAN transceiver HIGH to Board 2's transceiver HIGH
-2. Connect Board 1's CAN transceiver LOW to Board 2's transceiver LOW
-3. Verify 120Ω resistors are between HIGH and LOW on both transceivers
-4. Connect USB cables to both boards for power
+1. Select the project
+2. Project -> Build Project
 
-#### Step 2: Program Both Boards
-1. Open this project in STM32CubeIDE
-2. Build the project (Project → Build All)
-3. Connect Board 1 via USB
-4. Flash the program (Run → Debug or Run)
-5. Disconnect Board 1
-6. Connect Board 2 via USB
-7. Flash the same program
-8. Keep both boards powered
+Expected output:
 
-#### Step 3: Observe Operation
-**Expected Behavior:**
-- Both board LEDs (LD2) should blink rapidly
-- Each board sends a message every 100ms
-- Each board toggles LED when receiving the other's message
-- Result: ~10 blinks per second on each board
+* Build produces an `.elf` and usually a `.bin` or `.hex` under `Debug/` (or `Release/`).
 
-**Troubleshooting:**
+## Flash to NUCLEO
 
-| Symptom | Possible Cause | Solution |
-|---------|---------------|----------|
-| No LED blinking on either board | CAN bus not connected | Check HIGH/LOW wiring |
-| | Missing termination resistors | Verify 120Ω resistors present |
-| | Both boards not powered | Check USB connections |
-| Only one LED blinking | One board not transmitting | Re-flash board, check power |
-| | CAN transceiver issue | Check transceiver connections |
-| Intermittent blinking | Loose connections | Secure all wiring |
-| | Incorrect termination | Verify 120Ω value and placement |
+In CubeIDE:
 
-#### Step 4: Debug Monitoring (Optional)
-1. Keep Board 1 connected via ST-Link debugger
-2. Set breakpoint at `can_app.cpp:30` (CAN receive handler)
-3. Run in debug mode
-4. Breakpoint should trigger every 100ms when receiving from Board 2
-5. Inspect `f.id` (should be `0x123`) and `f.data[0]` (incrementing counter)
+1. Run -> Debug (or Run)
+2. CubeIDE programs the board through ST LINK
 
-### Success Criteria:
-✅ Both LEDs blink continuously at ~10 Hz
-✅ No error handler triggered (boards don't freeze)
-✅ Counter increments in debugger
+Repeat for the second board.
 
-## Pin Connections Summary
+## Hardware wiring
 
-### Board Connections:
-```
-Board 1                          Board 2
--------                          -------
-CAN TX → Transceiver             CAN TX → Transceiver
-CAN RX ← Transceiver             CAN RX ← Transceiver
-         |                                |
-         HIGH ←------[CAN Bus]-------→ HIGH
-         LOW  ←------[CAN Bus]--------→ LOW
-         |                                |
-      [120Ω]                          [120Ω]
-```
+### STM32 to transceiver (SN65HVD230)
 
-### Nucleo-F446RE Default CAN Pins:
-- **CAN1_TX**: PB9 or PA12 (check .ioc file for actual configuration)
-- **CAN1_RX**: PB8 or PA11 (check .ioc file for actual configuration)
+* NUCLEO PA12 (CAN1_TX) -> SN65HVD230 TXD
+* NUCLEO PA11 (CAN1_RX) -> SN65HVD230 RXD
+* NUCLEO 3.3 V -> SN65HVD230 VCC (do not use 5 V unless your module supports it)
+* NUCLEO GND -> SN65HVD230 GND
 
-## Code Key Points
+### CAN bus between transceivers
 
-### Initialization Flow (main.c):
-```c
-main() → MX_CAN1_Init() → MX_CAN2_Init() → CanApp_Init() → main loop
-```
+* CANH on transceiver A <-> CANH on transceiver B
+* CANL on transceiver A <-> CANL on transceiver B
 
-### Main Loop (main.c:106-108):
-```c
-while (1) {
-    CanApp_Tick();  // Sends counter every 100ms, processes RX queue
-}
-```
+### Termination
 
-### CAN Message Format:
-- **ID**: 0x123 (11-bit standard ID)
-- **DLC**: 1 byte
-- **Data**: 8-bit counter value
+* Place a 120 ohm resistor across CANH and CANL at each physical end of the bus.
+* With two nodes, that usually means one 120 ohm at each end.
 
-## Next Steps
+Common mistakes:
 
-To implement the full UART-CAN bridge functionality:
-1. Add UART RX interrupt handler
-2. Create UART receive buffer
-3. Implement UART → CAN forwarding logic
-4. Implement CAN → UART forwarding logic
-5. Define message protocol/framing
-6. Test bidirectional communication
+* No shared ground between nodes
+* Missing termination, or termination placed incorrectly
+* CANH and CANL swapped on one end
 
-## Hardware Requirements
+## CAN bitrate and timing
 
-- 2x STM32 Nucleo-F446RE boards
-- 2x CAN transceivers (e.g., TJA1050, MCP2551)
-- 2x 120Ω resistors (1/4W or higher)
-- Jumper wires for connections
-- 2x USB cables
+Bitrate is configured via CubeMX (the `.ioc` settings). Current target is 500 kbps using:
+
+* CAN clock: 45 MHz
+* Prescaler: 6
+* SyncSeg: 1
+* TimeSeg1: 12
+* TimeSeg2: 2
+
+Formula:
+
+* Bitrate = CAN_clock / (Prescaler * (SyncSeg + TimeSeg1 + TimeSeg2))
+* 500000 = 45000000 / (6 * (1 + 12 + 2)) = 45000000 / 90
+
+If you change clock tree, APB settings, prescaler, or time segments, recompute bitrate.
+
+## Node configuration for 2 board test
+
+The application uses per board constants for:
+
+* ThisNode: which IDs the board accepts (filters)
+* PeerNode: which node the board sends commands to
+
+Find these in:
+
+* `Core/Src/can/can_app.cpp`
+
+Example intent for two boards:
+
+* Board A: ThisNode = 1, PeerNode = 2
+* Board B: ThisNode = 2, PeerNode = 1
+
+After changing node IDs, rebuild and flash.
+
+## CAN IDs and why some are accepted
+
+IDs come from:
+
+* `Core/Inc/can/can_protocol.hpp`
+
+High level scheme:
+
+* Command to a node: CmdId(node) = CmdBase + node
+* State from a node:  StateId(node) = StateBase + node
+* Heartbeat:          HbId(node) = HbBase + node
+
+In the current bring up test, a joint style node typically accepts:
+
+* CmdId(ThisNode)
+* HbId(ThisNode) (if included)
+
+It does not accept StateId(ThisNode) because state frames are intended to flow joint to master, not back into the joint.
+
+## Filtering behavior (bxCAN allowlist)
+
+Filtering is configured in:
+
+* `Core/Src/can/can_bus_stm32.cpp`
+
+The driver init takes an allowlist of standard IDs and configures bxCAN filters using:
+
+* IDLIST mode
+* 32 bit scale
+* FIFO0 assignment
+
+Key behavior:
+
+* One filter bank can match two exact standard IDs in 32 bit list mode.
+* If more than two IDs are provided, additional banks are configured in a loop.
+
+Result:
+
+* MCU receives only traffic intended for that node, reducing CPU load and preventing RX queue flooding later.
+
+## Runtime behavior and validation on hardware
+
+Expected behavior:
+
+* Each board transmits a command frame every 100 ms to the peer command ID.
+* When a board receives a CAN frame that passes its filter, it toggles LD2.
+
+Basic test checklist:
+
+1. Flash Board A with ThisNode = 1, PeerNode = 2
+2. Flash Board B with ThisNode = 2, PeerNode = 1
+3. Connect CAN wiring and termination
+4. Observe LEDs toggling on both boards when traffic is received
+
+Filter validation test:
+
+* Change the transmit ID on one board to an ID not accepted by the other board allowlist.
+* Reflash, the other board should stop toggling, confirming filtering is active.
+
+## Project structure (key files)
+
+Protocol and data types:
+
+* `Core/Inc/can/can_protocol.hpp`  
+  Defines CAN ID helpers and 8 byte payload structs (command, state, heartbeat).
+
+* `Core/Inc/can/can_frame.hpp`  
+  Lightweight frame representation used internally, independent of HAL structs.
+
+RX buffering:
+
+* `Core/Inc/can/ring_buffer.hpp`  
+  Fixed size RX ring buffer used to move RX work out of interrupt context.
+
+STM32 CAN wrapper:
+
+* `Core/Inc/can/can_bus_stm32.hpp`
+* `Core/Src/can/can_bus_stm32.cpp`  
+  Configures filters, starts CAN, enables notifications, provides send and RX queueing.
+
+C and C++ bridge and app entrypoints:
+
+* `Core/Inc/can/can_app.h`
+* `Core/Src/can/can_app.cpp`  
+  CanApp_Init and CanApp_Tick entrypoints plus HAL RX callback forwarding into the C++ driver.
+
+Generated code:
+
+* CubeMX generates `main.c`, interrupts, MSP init, and the `.ioc`.
+* Keep custom logic inside the `can/` module and only minimal glue in generated sections.
+
+## Common pitfalls
+
+### Duplicate HAL callbacks
+
+Only define each HAL callback once. For example:
+
+* `HAL_CAN_RxFifo0MsgPendingCallback` must exist in exactly one file.
+* Defining it in both `main.c` and `can_app.cpp` causes multiple definition linker errors.
+
+### C and C++ linkage
+
+Functions called from C (`main.c`) must have C linkage:
+
+* `CanApp_Init`
+* `CanApp_Tick`
+
+These are declared in `can_app.h` with extern C guards.
+
+### Filters not taking effect
+
+* Confirm filters are configured before `HAL_CAN_Start`
+* Confirm CAN1 and FIFO0 are used consistently
+* Confirm ID packing matches standard 11 bit IDs
+
+## Next steps after bring up
+
+* Replace LED toggling with real message dispatch and payload decoding.
+* Implement command sequence echo and timeout safety behavior (loss of command leads to safe state).
+* Add counters for dropped frames and RX queue overflow.
+* Add Pi SocketCAN integration once MCU side is stable.
