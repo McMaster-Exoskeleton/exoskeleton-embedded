@@ -21,7 +21,8 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-#include "can/can_app.h"
+#include "can/uart_cmd.h"
+#include "can/can_frame.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -45,7 +46,8 @@ CAN_HandleTypeDef hcan1;
 UART_HandleTypeDef huart2;
 
 /* USER CODE BEGIN PV */
-
+static MotorStatus motor_status = {0};
+static uint8_t prev_motor_error = 0;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -95,6 +97,7 @@ int main(void)
   MX_CAN1_Init();
   /* USER CODE BEGIN 2 */
   can_bus_init(&hcan1);
+  uart_cmd_init(&huart2);
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -104,6 +107,22 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
+
+    /* Poll CAN RX buffer and update cached motor status */
+    CanFrame rx_frame;
+    while (can_bus_recv(&rx_frame)) {
+      motor_receive(&motor_status, rx_frame.data);
+
+      /* Proactive error notification on error state change */
+      if (motor_status.error != prev_motor_error &&
+          motor_status.error != MOTOR_ERROR_NONE) {
+        uart_cmd_send_error(motor_status.error);
+      }
+      prev_motor_error = motor_status.error;
+    }
+
+    /* Process any pending UART commands from the host */
+    uart_cmd_process(&motor_status);
   }
   /* USER CODE END 3 */
 }
@@ -265,7 +284,9 @@ static void MX_GPIO_Init(void)
 }
 
 /* USER CODE BEGIN 4 */
-
+void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart) {
+  uart_cmd_rx_callback(huart);
+}
 /* USER CODE END 4 */
 
 /**

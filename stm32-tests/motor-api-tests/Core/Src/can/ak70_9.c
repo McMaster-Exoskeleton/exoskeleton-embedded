@@ -174,13 +174,52 @@ void pack_cmd(uint8_t controller_id, float p_des, float v_des, float kp, float k
  * ========================================================================= */
 
 void motor_receive(MotorStatus* status, const uint8_t* data) {
-    int16_t pos_int = (int16_t)((data[0] << 8) | data[1]);
-    int16_t spd_int = (int16_t)((data[2] << 8) | data[3]);
-    int16_t cur_int = (int16_t)((data[4] << 8) | data[5]);
+    status->position    = motor_read_position(data);
+    status->speed       = motor_read_speed(data);
+    status->current     = motor_read_current(data);
+    status->temperature = motor_read_temperature(data);
+    status->error       = motor_read_error(data);
+}
 
-    status->position    = (float)(pos_int) * 0.1f;
-    status->speed       = (float)(spd_int) * 10.0f;
-    status->current     = (float)(cur_int) * 0.01f;
-    status->temperature = (int8_t)data[6];
-    status->error       = data[7];
+/* =========================================================================
+ * Modular Read Functions
+ *
+ * Each function parses a single field from the raw 8-byte motor feedback.
+ * ========================================================================= */
+
+float motor_read_position(const uint8_t* data) {
+    int16_t raw = (int16_t)((data[0] << 8) | data[1]);
+    return (float)(raw) * 0.1f;
+}
+
+float motor_read_speed(const uint8_t* data) {
+    int16_t raw = (int16_t)((data[2] << 8) | data[3]);
+    return (float)(raw) * 10.0f;
+}
+
+float motor_read_current(const uint8_t* data) {
+    int16_t raw = (int16_t)((data[4] << 8) | data[5]);
+    return (float)(raw) * 0.01f;
+}
+
+int8_t motor_read_temperature(const uint8_t* data) {
+    return (int8_t)data[6];
+}
+
+uint8_t motor_read_error(const uint8_t* data) {
+    return data[7];
+}
+
+const char* motor_error_to_string(uint8_t error_code) {
+    switch (error_code) {
+        case MOTOR_ERROR_NONE:             return "NONE";
+        case MOTOR_ERROR_OVER_TEMP:        return "MOTOR_OVER_TEMP";
+        case MOTOR_ERROR_OVER_CURRENT:     return "OVER_CURRENT";
+        case MOTOR_ERROR_OVER_VOLTAGE:     return "OVER_VOLTAGE";
+        case MOTOR_ERROR_UNDER_VOLTAGE:    return "UNDER_VOLTAGE";
+        case MOTOR_ERROR_ENCODER:          return "ENCODER_FAULT";
+        case MOTOR_ERROR_MOSFET_OVER_TEMP: return "MOSFET_OVER_TEMP";
+        case MOTOR_ERROR_STALL:            return "MOTOR_STALL";
+        default:                           return "UNKNOWN";
+    }
 }

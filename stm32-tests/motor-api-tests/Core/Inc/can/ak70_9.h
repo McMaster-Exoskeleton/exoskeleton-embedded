@@ -202,11 +202,41 @@ int float_to_uint(float x, float x_min, float x_max, unsigned int bits);
 
 /*
  * Parse an 8-byte motor feedback CAN message into a MotorStatus struct.
+ * Populates all fields at once. For individual field parsing, use the
+ * motor_read_* functions below.
  *
  * status: pointer to MotorStatus struct to populate
  * data:   pointer to the 8-byte CAN data payload
  */
 void motor_receive(MotorStatus* status, const uint8_t* data);
+
+/* ======================== Modular Read Functions ========================== */
+
+/*
+ * Parse individual motor feedback fields from the raw 8-byte CAN payload.
+ * These allow reading a single value without parsing the entire message.
+ */
+
+/* Read motor position in degrees from feedback bytes 0-1. */
+float motor_read_position(const uint8_t* data);
+
+/* Read motor speed in electrical RPM from feedback bytes 2-3. */
+float motor_read_speed(const uint8_t* data);
+
+/* Read motor current in amps from feedback bytes 4-5. */
+float motor_read_current(const uint8_t* data);
+
+/* Read driver board temperature in degrees C from feedback byte 6. */
+int8_t motor_read_temperature(const uint8_t* data);
+
+/* Read motor error code from feedback byte 7. */
+uint8_t motor_read_error(const uint8_t* data);
+
+/*
+ * Convert a motor error code to a human-readable string.
+ * Returns a static string describing the error (e.g. "OVER_CURRENT").
+ */
+const char* motor_error_to_string(uint8_t error_code);
 
 /* ======================== Byte Packing Utilities ========================= */
 
