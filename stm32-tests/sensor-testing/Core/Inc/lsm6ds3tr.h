@@ -15,11 +15,11 @@
 
 // Scale selections (for configuration)
 #define FS_GYRO_500DPS		0b00000100 // 0x04 -> Table 54. of datasheet
-#define FS_ACCEL_4G 	    0b00001000 // 0x08 -> Table 50. of datasheet
+#define FS_ACCEL_4G 	    0b00001000 // 0x08 -> Table 51. of datasheet
 
 // Check connection (lsm6ds3tr_check_connection)
 #define REG_WHO_AM_I 		0x0F
-#define WHO_AM_I_VAL 		0x6A // expected WHO_AM_I response for LSM6DS3TR-C
+#define WHO_AM_I_VAL 		0x6A // expected WHO_AM_I response for LSM6DS3TR-C (verify)
 
 // Control registers
 #define REG_CTRL1_XL		0x10 // Accelerometer control register
