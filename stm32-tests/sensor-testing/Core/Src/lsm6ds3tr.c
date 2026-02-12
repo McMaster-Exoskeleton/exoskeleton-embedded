@@ -5,7 +5,7 @@
  * Referenced from discovery-tests/discovery-imu-test
  */
 
-#include "mpu9250.h"
+#include "lsm6ds3tr.h"
 #include "main.h"
 #include <stdio.h>
 
@@ -15,8 +15,11 @@
 #define LIN_ACCEL_SENSITIVITY_4G 0.000122f // g/LSB
 #define ANG_VEL_SENSITIVITY_500DPS 0.0175f // dps/LSB
 
+// Normal mode for accel+gyro (104Hz ODR) -> Tables 52,55 of lsm6ds3tr-c.pdf
+#define ODR_104HZ 0x40
+
 static I2C_HandleTypeDef *_hi2c;
-static MPU9250_Data_t imu_data;
+static LSM6DS3TR_Data_t imu_data;
 
 // Variable definitions for offset calculation
 static uint16_t calibrated = 0;
@@ -27,22 +30,27 @@ void lsm6ds3tr_init_driver(I2C_HandleTypeDef *hi2c)
 {
 	_hi2c = hi2c;
 	imu_data.state = SENSOR_STATE_LOST;
-	imu_data.accel.x = 0;
-	imu_data.accel.y = 0;
-	imu_data.accel.z = 0;
-	imu_data.gyro.x = 0;
-	imu_data.gyro.y = 0;
-	imu_data.gyro.z = 0;
+
+	// Initialize struct with default values
+	imu_data.accel.x = 0; imu_data.accel.y = 0; imu_data.accel.z = 0;
+	imu_data.gyro.x = 0; imu_data.gyro.y = 0; imu_data.gyro.z = 0;
+	imu_data.accel.filt_x = 0; imu_data.accel.filt_y = 0; imu_data.accel.filt_z = 0;
+	imu_data.gyro.filt_x = 0; imu_data.gyro.filt_y = 0; imu_data.gyro.filt_z = 0;
+
+	// Initialize config values to 0 (not configured)
 	imu_data.gyro_config = 0;
 	imu_data.accel_config = 0;
 	imu_data.power_config = 0;
 }
 
-uint8_t lms6ds3tr_check_connection(void)
+uint8_t lsm6ds3tr_check_connection(void)
 {
-	HAL_StatusTypeDef ret = HAL_I2C_IsDeviceReady(_hi2c, MPU9250_ADDRESS, 1, 100);
+	uint8_t who_am_i;
 
-	if (ret == HAL_OK)
+	// Read WHO_AM_I register
+	HAL_StatusTypeDef ret = HAL_I2C_Mem_Read(_hi2c, LSM6DS3TR_ADDRESS, REG_WHO_AM_I, 1, &who_am_i, 1, 100);
+
+	if (ret == HAL_OK && who_am_i == WHO_AM_I_VAL)
 	{
 		imu_data.state = SENSOR_STATE_CONNECTED;
 		return 1;
@@ -52,52 +60,52 @@ uint8_t lms6ds3tr_check_connection(void)
 	return 0;
 }
 
-uint8_t mpu9250_configure(void)
+uint8_t lsm6ds3tr_configure(void)
 {
 	uint8_t temp_data;
 	HAL_StatusTypeDef ret;
 
-	// Configure Accelerometer (4G, matching discovery implementation)
-	temp_data = FS_ACCEL_4G;
-	ret = HAL_I2C_Mem_Write(_hi2c, MPU9250_ADDRESS, REG_CONFIG_ACCEL, 1, &temp_data, 1, 100);
-	if (ret != HAL_OK)
-		return 0;
+	// Turn on Accelerometer -> configure accel (104 Hz ODR, 4g FS)
+	temp_data = ODR_104HZ | FS_ACCEL_4G;
+	ret = HAL_I2C_Mem_Write(_hi2c, LSM6DS3TR_ADDRESS, REG_CTRL1_XL, 1, &temp_data, 1, 100);
+	if (ret != HAL_OK) return 0;
 	imu_data.accel_config = temp_data;
 
-	// Configure Gyroscope (500dps, matching discovery implementation)
-	temp_data = FS_GYRO_500;
-	ret = HAL_I2C_Mem_Write(_hi2c, MPU9250_ADDRESS, REG_CONFIG_GYRO, 1, &temp_data, 1, 100);
-	if (ret != HAL_OK)
-		return 0;
+	// Turn on Gyroscope -> configure accel (104 Hz ODR, 500dps FS)
+	temp_data = ODR_104HZ | FS_GYRO_500DPS;
+	ret = HAL_I2C_Mem_Write(_hi2c, LSM6DS3TR_ADDRESS, REG_CTRL2_G, 1, &temp_data, 1, 100);
+	if (ret != HAL_OK) return 0;
 	imu_data.gyro_config = temp_data;
-
-	// Configure Power (wake up sensor)
-	temp_data = 0x00;
-	ret = HAL_I2C_Mem_Write(_hi2c, MPU9250_ADDRESS, REG_POW_MAN, 1, &temp_data, 1, 100);
-	if (ret != HAL_OK)
-		return 0;
-	imu_data.power_config = temp_data;
 
 	return 1;
 }
 
-uint8_t mpu9250_read(void)
+uint8_t lsm6ds3tr_read(void)
 {
 	if (imu_data.state == SENSOR_STATE_LOST)
 	{
-		if (!mpu9250_check_connection())
+		if (!lsm6ds3tr_check_connection())
 			return 0;
 
-		if (!mpu9250_configure())
+		if (!lsm6ds3tr_configure())
 			return 0;
 	}
 
-	// 14-byte buffer: accel(6) + temp(2) + gyro(6)
-	uint8_t data[14];
+	// 6-byte buffers for accel and gyro
 	HAL_StatusTypeDef ret;
+	uint8_t accel_buffer[6];
+	uint8_t gyro_buffer[6];
 
-	ret = HAL_I2C_Mem_Read(_hi2c, MPU9250_ADDRESS, REG_ACCEL_DATA, 1, data, 14, 100);
+	// Read accel data (6 bytes starting at REG_OUTX_L_XL [0x28], incrementing up to 0x2D)
+	ret = HAL_I2C_Mem_Read(_hi2c, LSM6DS3TR_ADDRESS, REG_OUTX_L_XL, 1, accel_buffer, 6, 100);
+	if (ret != HAL_OK)
+	{
+		imu_data.state = SENSOR_STATE_LOST;
+		return 0;
+	}
 
+	// Read gyro data (6 bytes starting at REG_OUTX_L_G [0x22], incrementing up to 0x27)
+	ret = HAL_I2C_Mem_Read(_hi2c, LSM6DS3TR_ADDRESS, REG_OUTX_L_G, 1, gyro_buffer, 6, 100);
 	if (ret != HAL_OK)
 	{
 		imu_data.state = SENSOR_STATE_LOST;
@@ -112,15 +120,16 @@ uint8_t mpu9250_read(void)
 	int16_t y_gyro;
 	int16_t z_gyro;
 
-	// Get raw data from IMU
-	x_accel = ((int16_t)data[0] << 8) + data[1];
-	y_accel = ((int16_t)data[2] << 8) + data[3];
-	z_accel = ((int16_t)data[4] << 8) + data[5];
-	x_gyro = ((int16_t)data[8] << 8) + data[9];
-	y_gyro = ((int16_t)data[10] << 8) + data[11];
-	z_gyro = ((int16_t)data[12] << 8) + data[13];
+	// Get raw data from IMU (LITTLE_ENDIAN, so LB comes before HB [opposite of mpu9250])
+	x_accel = ((int16_t)accel_buffer[1] << 8) + accel_buffer[0];
+	y_accel = ((int16_t)accel_buffer[3] << 8) + accel_buffer[2];
+	z_accel = ((int16_t)accel_buffer[5] << 8) + accel_buffer[4];
 
-	// Calibrate IMU by calculating offset
+	x_gyro = ((int16_t)gyro_buffer[1] << 8) + gyro_buffer[0];
+	y_gyro = ((int16_t)gyro_buffer[3] << 8) + gyro_buffer[2];
+	z_gyro = ((int16_t)gyro_buffer[5] << 8) + gyro_buffer[4];
+
+	// Calibrate IMU by calculating offsets (only occurs during setup, & assumes stationary during calibration)
 	if (!calibrated)
 	{
 
@@ -131,15 +140,16 @@ uint8_t mpu9250_read(void)
 
 		for(int i = 0; i<sample_num; ++i)
 		{
-			HAL_I2C_Mem_Read(_hi2c, MPU9250_ADDRESS, REG_ACCEL_DATA, 1, data, 14, 100);
+			HAL_I2C_Mem_Read(_hi2c, LSM6DS3TR_ADDRESS, REG_OUTX_L_XL, 1, accel_buffer, 6, 100);
+			HAL_I2C_Mem_Read(_hi2c, LSM6DS3TR_ADDRESS, REG_OUTX_L_G, 1, gyro_buffer, 6, 100);
 
-			int16_t curr_off_ax = ((int16_t)data[0] << 8) + data[1];
-			int16_t curr_off_ay = ((int16_t)data[2] << 8) + data[3];
-			int16_t curr_off_az = ((int16_t)data[4] << 8) + data[5];
+			int16_t curr_off_ax = ((int16_t)accel_buffer[1] << 8) + accel_buffer[0];
+			int16_t curr_off_ay = ((int16_t)accel_buffer[3] << 8) + accel_buffer[2];
+			int16_t curr_off_az = ((int16_t)accel_buffer[5] << 8) + accel_buffer[4];
 
-			int16_t curr_off_gx = ((int16_t)data[8] << 8) + data[9];
-			int16_t curr_off_gy = ((int16_t)data[10] << 8) + data[11];
-			int16_t curr_off_gz = ((int16_t)data[12] << 8) + data[13];
+			int16_t curr_off_gx = ((int16_t)gyro_buffer[1] << 8) + gyro_buffer[0];
+			int16_t curr_off_gy = ((int16_t)gyro_buffer[3] << 8) + gyro_buffer[2];
+			int16_t curr_off_gz = ((int16_t)gyro_buffer[5] << 8) + gyro_buffer[4];
 
 
 			total_off_ax += (LIN_ACCEL_SENSITIVITY_4G * curr_off_ax) * GRAVITY;
@@ -192,7 +202,7 @@ uint8_t mpu9250_read(void)
 	return 1;
 }
 
-MPU9250_Data_t* mpu9250_get_data(void)
+LSM6DS3TR_Data_t* lsm6ds3tr_get_data(void)
 {
 	return &imu_data;
 }
