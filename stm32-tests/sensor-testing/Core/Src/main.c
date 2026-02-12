@@ -100,7 +100,7 @@ int main(void)
   MX_USART2_UART_Init();
   MX_I2C3_Init();
   /* USER CODE BEGIN 2 */
-  mpu9250_init_driver(&hi2c3);
+  lsm6ds3tr_init_driver(&hi2c3);
   HAL_UART_Receive_IT(&huart2, rx_data, 1);
   /* USER CODE END 2 */
 
@@ -113,7 +113,7 @@ int main(void)
     /* USER CODE BEGIN 3 */
 
 	// ALWAYS read values
-	mpu9250_read();
+	lsm6ds3tr_read();
 
     if (cmd_ready)
     {
@@ -305,7 +305,7 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
 
 static void process_command(void)
 {
-  MPU9250_Data_t *imu = mpu9250_get_data();
+  LSM6DS3TR_Data_t *imu = lsm6ds3tr_get_data();
   uint16_t len;
 
   if (strcmp((char*)rx_buffer, "READ") == 0)
@@ -319,7 +319,7 @@ static void process_command(void)
   }
   else if (strcmp((char*)rx_buffer, "STATUS") == 0)
   {
-    mpu9250_check_connection();
+    lsm6ds3tr_check_connection();
     if (imu->state == SENSOR_STATE_CONNECTED)
     {
       len = sprintf((char*)tx_buffer, "STATUS:CONNECTED\r\n");
