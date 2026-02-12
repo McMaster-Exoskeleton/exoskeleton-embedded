@@ -1,7 +1,7 @@
 /*
- * mpu9250.c
+ * lsm6ds3tr.c
  *
- * MPU9250 IMU Driver for Nucleo F446RE
+ * LSM6DS3TR Driver for Nucleo F446RE
  * Referenced from discovery-tests/discovery-imu-test
  */
 
@@ -23,7 +23,7 @@ static uint16_t calibrated = 0;
 static float offset_gx = 0, offset_gy = 0, offset_gz = 0;
 static float offset_ax = 0, offset_ay = 0, offset_az = 0;
 
-void mpu9250_init_driver(I2C_HandleTypeDef *hi2c)
+void lsm6ds3tr_init_driver(I2C_HandleTypeDef *hi2c)
 {
 	_hi2c = hi2c;
 	imu_data.state = SENSOR_STATE_LOST;
@@ -38,7 +38,7 @@ void mpu9250_init_driver(I2C_HandleTypeDef *hi2c)
 	imu_data.power_config = 0;
 }
 
-uint8_t mpu9250_check_connection(void)
+uint8_t lms6ds3tr_check_connection(void)
 {
 	HAL_StatusTypeDef ret = HAL_I2C_IsDeviceReady(_hi2c, MPU9250_ADDRESS, 1, 100);
 

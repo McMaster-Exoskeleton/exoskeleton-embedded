@@ -23,7 +23,7 @@
 /* USER CODE BEGIN Includes */
 #include <stdio.h>
 #include <string.h>
-#include "mpu9250.h"
+#include "lsm6ds3tr.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
