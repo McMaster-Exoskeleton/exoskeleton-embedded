@@ -42,11 +42,16 @@
 /* USER CODE END PM */
 
 /* Private variables ---------------------------------------------------------*/
+CAN_HandleTypeDef hcan1;
+
 I2C_HandleTypeDef hi2c3;
 
 UART_HandleTypeDef huart2;
 
 /* USER CODE BEGIN PV */
+CAN_TxHeaderTypeDef TxHeader;
+uint8_t TxData[8];
+uint32_t TxMailbox;
 uint8_t rx_data[1];
 uint8_t rx_buffer[100];
 uint8_t rx_index = 0;
@@ -59,6 +64,7 @@ void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
 static void MX_USART2_UART_Init(void);
 static void MX_I2C3_Init(void);
+static void MX_CAN1_Init(void);
 /* USER CODE BEGIN PFP */
 static void process_command(void);
 /* USER CODE END PFP */
@@ -99,7 +105,9 @@ int main(void)
   MX_GPIO_Init();
   MX_USART2_UART_Init();
   MX_I2C3_Init();
+  MX_CAN1_Init();
   /* USER CODE BEGIN 2 */
+  HAL_CAN_Start(&hcan1);
   mpu9250_init_driver(&hi2c3);
   HAL_UART_Receive_IT(&huart2, rx_data, 1);
   /* USER CODE END 2 */
@@ -113,7 +121,8 @@ int main(void)
     /* USER CODE BEGIN 3 */
 
 	// ALWAYS read values
-	mpu9250_read();
+	mpu9250_read();          // 1. Filtered data
+	CAN_Send_IMU_Data();     // 2. Push to CAN Bus
 
     if (cmd_ready)
     {
@@ -122,7 +131,7 @@ int main(void)
     }
 
     // Add a small delay
-    HAL_Delay(10);
+    HAL_Delay(20);
   }
   /* USER CODE END 3 */
 }
@@ -172,6 +181,43 @@ void SystemClock_Config(void)
   {
     Error_Handler();
   }
+}
+
+/**
+  * @brief CAN1 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_CAN1_Init(void)
+{
+
+  /* USER CODE BEGIN CAN1_Init 0 */
+
+  /* USER CODE END CAN1_Init 0 */
+
+  /* USER CODE BEGIN CAN1_Init 1 */
+
+  /* USER CODE END CAN1_Init 1 */
+  hcan1.Instance = CAN1;
+  hcan1.Init.Prescaler = 6;
+  hcan1.Init.Mode = CAN_MODE_NORMAL;
+  hcan1.Init.SyncJumpWidth = CAN_SJW_1TQ;
+  hcan1.Init.TimeSeg1 = CAN_BS1_11TQ;
+  hcan1.Init.TimeSeg2 = CAN_BS2_2TQ;
+  hcan1.Init.TimeTriggeredMode = DISABLE;
+  hcan1.Init.AutoBusOff = DISABLE;
+  hcan1.Init.AutoWakeUp = DISABLE;
+  hcan1.Init.AutoRetransmission = DISABLE;
+  hcan1.Init.ReceiveFifoLocked = DISABLE;
+  hcan1.Init.TransmitFifoPriority = DISABLE;
+  if (HAL_CAN_Init(&hcan1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN CAN1_Init 2 */
+
+  /* USER CODE END CAN1_Init 2 */
+
 }
 
 /**
@@ -281,6 +327,35 @@ static void MX_GPIO_Init(void)
 }
 
 /* USER CODE BEGIN 4 */
+
+void CAN_Send_IMU_Data(void)
+{
+  MPU9250_Data_t *imu = mpu9250_get_data();
+
+  // We only send if the sensor is actually connected
+  if (imu->state != SENSOR_STATE_CONNECTED) return;
+
+  TxHeader.StdId = 0x123;
+  TxHeader.IDE = CAN_ID_STD;
+  TxHeader.RTR = CAN_RTR_DATA;
+  TxHeader.DLC = 8;
+
+  // Mapping float (m/s^2) to int16 to fit in CAN frame (Multiply by 100 for precision)
+  int16_t ax = (int16_t)(imu->accel.filt_x * 100);
+  int16_t ay = (int16_t)(imu->accel.filt_y * 100);
+  int16_t az = (int16_t)(imu->accel.filt_z * 100);
+
+  TxData[0] = (ax >> 8) & 0xFF;
+  TxData[1] = ax & 0xFF;
+  TxData[2] = (ay >> 8) & 0xFF;
+  TxData[3] = ay & 0xFF;
+  TxData[4] = (az >> 8) & 0xFF;
+  TxData[5] = az & 0xFF;
+  TxData[6] = 0x00; // Extra padding
+  TxData[7] = 0x00;
+
+  HAL_CAN_AddTxMessage(&hcan1, &TxHeader, TxData, &TxMailbox);
+}
 
 void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
 {
