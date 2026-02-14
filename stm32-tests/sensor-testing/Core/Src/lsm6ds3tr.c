@@ -21,6 +21,8 @@
 static I2C_HandleTypeDef *_hi2c;
 static LSM6DS3TR_Data_t imu_data;
 
+static uint8_t dma_rx_buffer[12];
+
 // Variable definitions for offset calculation
 static uint16_t calibrated = 0;
 static float offset_gx = 0, offset_gy = 0, offset_gz = 0;
@@ -211,6 +213,79 @@ uint8_t lsm6ds3tr_read(void)
 	imu_data.gyro.z = z_gyro;
 
 	return 1;
+}
+
+uint8_t lsm6ds3tr_init_dma_read(void)
+{
+	if (imu_data.state == SENSOR_STATE_LOST)
+	{
+		if (!lsm6ds3tr_check_connection())
+			return 0;
+
+		if (!lsm6ds3tr_configure())
+			return 0;
+	}
+
+	// Burst Read 12 Bytes starting from REG_OUTX_L_G (0x22)
+	HAL_StatusTypeDef ret = HAL_I2C_Mem_Read_DMA(
+		_hi2c,
+		LSM6DS3TR_ADDRESS,
+		REG_OUTX_L_G,
+		1,
+		dma_rx_buffer,
+		12);
+
+	if (ret != HAL_OK)
+	{
+		imu_data.state = SENSOR_STATE_LOST;
+
+		return 0;
+	}
+
+	return 1;
+}
+
+void HAL_I2C_MemRxCpltCallback(I2C_HandleTypeDef *hi2c)
+{
+	if (hi2c->Instance == _hi2c->Instance)
+	{
+		// Buffer Layout: [0 - 5] -> Gyrscope, [6 - 11] -> Accelerometer
+
+		int16_t x_gyro = ((int16_t)dma_rx_buffer[1] << 8) + dma_rx_buffer[0];
+		int16_t y_gyro = ((int16_t)dma_rx_buffer[3] << 8) + dma_rx_buffer[2];
+		int16_t z_gyro = ((int16_t)dma_rx_buffer[5] << 8) + dma_rx_buffer[4];
+
+		int16_t x_accel = ((int16_t)dma_rx_buffer[7] << 8) + dma_rx_buffer[6];
+		int16_t y_accel = ((int16_t)dma_rx_buffer[9] << 8) + dma_rx_buffer[8];
+		int16_t z_accel = ((int16_t)dma_rx_buffer[11] << 8) + dma_rx_buffer[10];
+
+		imu_data.accel.x = x_accel;
+		imu_data.accel.y = y_accel;
+		imu_data.accel.z = z_accel;
+		imu_data.gyro.x = x_gyro;
+		imu_data.gyro.y = y_gyro;
+		imu_data.gyro.z = z_gyro;
+
+		// Unit Conversions + Offset Application
+		float x_accel_ms2 = (x_accel * LIN_ACCEL_SENSITIVITY_4G) * GRAVITY;
+		float y_accel_ms2 = (y_accel * LIN_ACCEL_SENSITIVITY_4G) * GRAVITY;
+		float z_accel_ms2 = (z_accel * LIN_ACCEL_SENSITIVITY_4G) * GRAVITY;
+
+		float x_gyro_dps = (x_gyro * ANG_VEL_SENSITIVITY_500DPS) - offset_gx;
+		float y_gyro_dps = (y_gyro * ANG_VEL_SENSITIVITY_500DPS) - offset_gy;
+		float z_gyro_dps = (z_gyro * ANG_VEL_SENSITIVITY_500DPS) - offset_gz;
+
+		// Low Pass Filter (y[n] = a * x[n] + (1 - a) * y[n - 1])
+		float alpha = 0.5f; // lower alpha = more smoothing (0.0 - 1.0)
+
+		imu_data.accel.filt_x = (alpha * x_accel_ms2) + (1.0f - alpha) * imu_data.accel.filt_x;
+		imu_data.accel.filt_y = (alpha * y_accel_ms2) + (1.0f - alpha) * imu_data.accel.filt_y;
+		imu_data.accel.filt_z = (alpha * z_accel_ms2) + (1.0f - alpha) * imu_data.accel.filt_z;
+
+		imu_data.gyro.filt_x = (alpha * x_gyro_dps) + (1.0f - alpha) * imu_data.gyro.filt_x;
+		imu_data.gyro.filt_y = (alpha * y_gyro_dps) + (1.0f - alpha) * imu_data.gyro.filt_y;
+		imu_data.gyro.filt_z = (alpha * z_gyro_dps) + (1.0f - alpha) * imu_data.gyro.filt_z;
+	}
 }
 
 LSM6DS3TR_Data_t *lsm6ds3tr_get_data(void)
