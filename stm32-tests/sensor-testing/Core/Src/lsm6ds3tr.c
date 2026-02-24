@@ -80,20 +80,25 @@ uint8_t lsm6ds3tr_configure(void)
 	// Turn on Accelerometer -> configure accel (104 Hz ODR, 4g FS)
 	temp_data = ODR_104HZ | FS_ACCEL_4G;
 	ret = HAL_I2C_Mem_Write(_hi2c, LSM6DS3TR_ADDRESS, REG_CTRL1_XL, 1, &temp_data, 1, 100);
+	
 	if (ret != HAL_OK)
 		return 0;
+
 	imu_data.accel_config = temp_data;
 
 	// Turn on Gyroscope -> configure accel (104 Hz ODR, 500dps FS)
 	temp_data = ODR_104HZ | FS_GYRO_500DPS;
 	ret = HAL_I2C_Mem_Write(_hi2c, LSM6DS3TR_ADDRESS, REG_CTRL2_G, 1, &temp_data, 1, 100);
+
 	if (ret != HAL_OK)
 		return 0;
+
 	imu_data.gyro_config = temp_data;
 
 	// Enable Block Data Update
 	temp_data = BDU_ENABLE;
 	ret = HAL_I2C_Mem_Write(_hi2c, LSM6DS3TR_ADDRESS, REG_CTRL3_C, 1, &temp_data, 1, 100);
+
 	if (ret != HAL_OK)
 		return 0;
 
@@ -192,17 +197,13 @@ uint8_t lsm6ds3tr_read(void)
 	float y_gyro_dps = (y_gyro * ANG_VEL_SENSITIVITY_500DPS) - offset_gy;
 	float z_gyro_dps = (z_gyro * ANG_VEL_SENSITIVITY_500DPS) - offset_gz;
 
-	// Low Pass Filter (y[n] = a * x[n] + (1 - a) * y[n - 1])
-	float alpha = 0.5f; // lower alpha = more smoothing (0.0 - 1.0)
+	imu_data.accel.filt_x = x_accel_ms2;
+	imu_data.accel.filt_y = y_accel_ms2;
+	imu_data.accel.filt_z = z_accel_ms2;
 
-	// Store filter in Struct
-	imu_data.accel.filt_x = (alpha * x_accel_ms2) + (1.0f - alpha) * imu_data.accel.filt_x;
-	imu_data.accel.filt_y = (alpha * y_accel_ms2) + (1.0f - alpha) * imu_data.accel.filt_y;
-	imu_data.accel.filt_z = (alpha * z_accel_ms2) + (1.0f - alpha) * imu_data.accel.filt_z;
-
-	imu_data.gyro.filt_x = (alpha * x_gyro_dps) + (1.0f - alpha) * imu_data.gyro.filt_x;
-	imu_data.gyro.filt_y = (alpha * y_gyro_dps) + (1.0f - alpha) * imu_data.gyro.filt_y;
-	imu_data.gyro.filt_z = (alpha * z_gyro_dps) + (1.0f - alpha) * imu_data.gyro.filt_z;
+	imu_data.gyro.filt_x = x_gyro_dps;
+	imu_data.gyro.filt_y = y_gyro_dps;
+	imu_data.gyro.filt_z = z_gyro_dps;
 
 	// Store raw data in Struct
 	imu_data.accel.x = x_accel;
