@@ -248,45 +248,45 @@ uint8_t lsm6ds3tr_init_dma_read(void)
 
 void HAL_I2C_MemRxCpltCallback(I2C_HandleTypeDef *hi2c)
 {
-	if (hi2c->Instance == _hi2c->Instance)
-	{
-		// Buffer Layout: [0 - 5] -> Gyrscope, [6 - 11] -> Accelerometer
+    if (hi2c->Instance == _hi2c->Instance)
+    {
+        // Buffer Layout: [0 - 5] -> Gyroscope, [6 - 11] -> Accelerometer
 
-		int16_t x_gyro = ((int16_t)dma_rx_buffer[1] << 8) + dma_rx_buffer[0];
-		int16_t y_gyro = ((int16_t)dma_rx_buffer[3] << 8) + dma_rx_buffer[2];
-		int16_t z_gyro = ((int16_t)dma_rx_buffer[5] << 8) + dma_rx_buffer[4];
+        int16_t x_gyro = ((int16_t)dma_rx_buffer[1] << 8) + dma_rx_buffer[0];
+        int16_t y_gyro = ((int16_t)dma_rx_buffer[3] << 8) + dma_rx_buffer[2];
+        int16_t z_gyro = ((int16_t)dma_rx_buffer[5] << 8) + dma_rx_buffer[4];
 
-		int16_t x_accel = ((int16_t)dma_rx_buffer[7] << 8) + dma_rx_buffer[6];
-		int16_t y_accel = ((int16_t)dma_rx_buffer[9] << 8) + dma_rx_buffer[8];
-		int16_t z_accel = ((int16_t)dma_rx_buffer[11] << 8) + dma_rx_buffer[10];
+        int16_t x_accel = ((int16_t)dma_rx_buffer[7] << 8) + dma_rx_buffer[6];
+        int16_t y_accel = ((int16_t)dma_rx_buffer[9] << 8) + dma_rx_buffer[8];
+        int16_t z_accel = ((int16_t)dma_rx_buffer[11] << 8) + dma_rx_buffer[10];
 
-		imu_data.accel.x = x_accel;
-		imu_data.accel.y = y_accel;
-		imu_data.accel.z = z_accel;
-		imu_data.gyro.x = x_gyro;
-		imu_data.gyro.y = y_gyro;
-		imu_data.gyro.z = z_gyro;
+        // Unit Conversions + Offset Application (MATCHING THE READ FUNCTION)
+        float x_accel_ms2 = (x_accel * LIN_ACCEL_SENSITIVITY_4G) * GRAVITY - offset_ax;
+        float y_accel_ms2 = (y_accel * LIN_ACCEL_SENSITIVITY_4G) * GRAVITY - offset_ay;
+        float z_accel_ms2 = (z_accel * LIN_ACCEL_SENSITIVITY_4G) * GRAVITY + offset_az;
 
-		// Unit Conversions + Offset Application
-		float x_accel_ms2 = (x_accel * LIN_ACCEL_SENSITIVITY_4G) * GRAVITY;
-		float y_accel_ms2 = (y_accel * LIN_ACCEL_SENSITIVITY_4G) * GRAVITY;
-		float z_accel_ms2 = (z_accel * LIN_ACCEL_SENSITIVITY_4G) * GRAVITY;
+        float x_gyro_dps = (x_gyro * ANG_VEL_SENSITIVITY_500DPS) - offset_gx;
+        float y_gyro_dps = (y_gyro * ANG_VEL_SENSITIVITY_500DPS) - offset_gy;
+        float z_gyro_dps = (z_gyro * ANG_VEL_SENSITIVITY_500DPS) - offset_gz;
 
-		float x_gyro_dps = (x_gyro * ANG_VEL_SENSITIVITY_500DPS) - offset_gx;
-		float y_gyro_dps = (y_gyro * ANG_VEL_SENSITIVITY_500DPS) - offset_gy;
-		float z_gyro_dps = (z_gyro * ANG_VEL_SENSITIVITY_500DPS) - offset_gz;
+        // Direct assignment (Hardware Filter is doing the work)
+        imu_data.accel.filt_x = x_accel_ms2;
+        imu_data.accel.filt_y = y_accel_ms2;
+        imu_data.accel.filt_z = z_accel_ms2;
 
-		// Low Pass Filter (y[n] = a * x[n] + (1 - a) * y[n - 1])
-		float alpha = 0.5f; // lower alpha = more smoothing (0.0 - 1.0)
+        imu_data.gyro.filt_x = x_gyro_dps;
+        imu_data.gyro.filt_y = y_gyro_dps;
+        imu_data.gyro.filt_z = z_gyro_dps;
 
-		imu_data.accel.filt_x = (alpha * x_accel_ms2) + (1.0f - alpha) * imu_data.accel.filt_x;
-		imu_data.accel.filt_y = (alpha * y_accel_ms2) + (1.0f - alpha) * imu_data.accel.filt_y;
-		imu_data.accel.filt_z = (alpha * z_accel_ms2) + (1.0f - alpha) * imu_data.accel.filt_z;
-
-		imu_data.gyro.filt_x = (alpha * x_gyro_dps) + (1.0f - alpha) * imu_data.gyro.filt_x;
-		imu_data.gyro.filt_y = (alpha * y_gyro_dps) + (1.0f - alpha) * imu_data.gyro.filt_y;
-		imu_data.gyro.filt_z = (alpha * z_gyro_dps) + (1.0f - alpha) * imu_data.gyro.filt_z;
-	}
+        // Store raw data
+        imu_data.accel.x = x_accel;
+        imu_data.accel.y = y_accel;
+        imu_data.accel.z = z_accel;
+        
+        imu_data.gyro.x = x_gyro;
+        imu_data.gyro.y = y_gyro;
+        imu_data.gyro.z = z_gyro;
+    }
 }
 
 LSM6DS3TR_Data_t *lsm6ds3tr_get_data(void)
