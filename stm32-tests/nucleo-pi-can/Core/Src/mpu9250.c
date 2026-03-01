@@ -1,22 +1,20 @@
-/*
- * mpu9250.c
- *
- * MPU9250 IMU Driver for Nucleo F446RE
- * Referenced from discovery-tests/discovery-imu-test
- */
-
 #include "mpu9250.h"
 #include "main.h"
 #include <stdio.h>
 
 #define GRAVITY 9.80665f
 
-// https://www.st.com/resource/en/datasheet/lsm6ds3tr-c.pdf
-#define LIN_ACCEL_SENSITIVITY_4G 0.000122f // g/LSB
-#define ANG_VEL_SENSITIVITY_500DPS 0.0175f // dps/LSB
+// Sensitivities for MPU9250
+// 4g range -> 8192 LSB/g -> 1/8192 = 0.00012207031
+#define LIN_ACCEL_SENSITIVITY_4G    0.00012207f
+// 500dps range -> 65.5 LSB/dps -> 1/65.5 = 0.015267175
+#define ANG_VEL_SENSITIVITY_500DPS  0.01526718f
 
 static I2C_HandleTypeDef *_hi2c;
 static MPU9250_Data_t imu_data;
+
+// MPU9250 contiguous data: 6 bytes Accel, 2 bytes Temp, 6 bytes Gyro = 14 bytes total
+static uint8_t dma_rx_buffer[14];
 
 // Variable definitions for offset calculation
 static uint16_t calibrated = 0;
@@ -25,174 +23,245 @@ static float offset_ax = 0, offset_ay = 0, offset_az = 0;
 
 void mpu9250_init_driver(I2C_HandleTypeDef *hi2c)
 {
-	_hi2c = hi2c;
-	imu_data.state = SENSOR_STATE_LOST;
-	imu_data.accel.x = 0;
-	imu_data.accel.y = 0;
-	imu_data.accel.z = 0;
-	imu_data.gyro.x = 0;
-	imu_data.gyro.y = 0;
-	imu_data.gyro.z = 0;
-	imu_data.gyro_config = 0;
-	imu_data.accel_config = 0;
-	imu_data.power_config = 0;
+    _hi2c = hi2c;
+    imu_data.state = SENSOR_STATE_LOST;
+
+    // Initialize struct with default values
+    imu_data.accel.x = 0;
+    imu_data.accel.y = 0;
+    imu_data.accel.z = 0;
+    imu_data.gyro.x = 0;
+    imu_data.gyro.y = 0;
+    imu_data.gyro.z = 0;
+    imu_data.accel.filt_x = 0;
+    imu_data.accel.filt_y = 0;
+    imu_data.accel.filt_z = 0;
+    imu_data.gyro.filt_x = 0;
+    imu_data.gyro.filt_y = 0;
+    imu_data.gyro.filt_z = 0;
+
+    // Initialize config values to 0 (not configured)
+    imu_data.gyro_config = 0;
+    imu_data.accel_config = 0;
+    imu_data.power_config = 0;
 }
 
 uint8_t mpu9250_check_connection(void)
 {
-	HAL_StatusTypeDef ret = HAL_I2C_IsDeviceReady(_hi2c, MPU9250_ADDRESS, 1, 100);
+    uint8_t who_am_i;
 
-	if (ret == HAL_OK)
-	{
-		imu_data.state = SENSOR_STATE_CONNECTED;
-		return 1;
-	}
+    // Read WHO_AM_I register (Usually 0x71 for MPU9250)
+    HAL_StatusTypeDef ret = HAL_I2C_Mem_Read(_hi2c, MPU9250_ADDRESS, REG_WHO_AM_I, 1, &who_am_i, 1, 100);
 
-	imu_data.state = SENSOR_STATE_LOST;
-	return 0;
+    if (ret == HAL_OK && who_am_i == WHO_AM_I_VAL)
+    {
+        imu_data.state = SENSOR_STATE_CONNECTED;
+        return 1;
+    }
+
+    imu_data.state = SENSOR_STATE_LOST;
+    return 0;
 }
 
 uint8_t mpu9250_configure(void)
 {
-	uint8_t temp_data;
-	HAL_StatusTypeDef ret;
+    uint8_t temp_data;
+    HAL_StatusTypeDef ret;
 
-	// Configure Accelerometer (4G, matching discovery implementation)
-	temp_data = FS_ACCEL_4G;
-	ret = HAL_I2C_Mem_Write(_hi2c, MPU9250_ADDRESS, REG_CONFIG_ACCEL, 1, &temp_data, 1, 100);
-	if (ret != HAL_OK)
-		return 0;
-	imu_data.accel_config = temp_data;
+    // 1. Wake up the sensor (Clear SLEEP bit in PWR_MGMT_1)
+    temp_data = 0x00;
+    ret = HAL_I2C_Mem_Write(_hi2c, MPU9250_ADDRESS, REG_PWR_MGMT_1, 1, &temp_data, 1, 100);
+    if (ret != HAL_OK) return 0;
+    imu_data.power_config = temp_data;
 
-	// Configure Gyroscope (500dps, matching discovery implementation)
-	temp_data = FS_GYRO_500;
-	ret = HAL_I2C_Mem_Write(_hi2c, MPU9250_ADDRESS, REG_CONFIG_GYRO, 1, &temp_data, 1, 100);
-	if (ret != HAL_OK)
-		return 0;
-	imu_data.gyro_config = temp_data;
+    HAL_Delay(10); // Wait for sensor to stabilize
 
-	// Configure Power (wake up sensor)
-	temp_data = 0x00;
-	ret = HAL_I2C_Mem_Write(_hi2c, MPU9250_ADDRESS, REG_POW_MAN, 1, &temp_data, 1, 100);
-	if (ret != HAL_OK)
-		return 0;
-	imu_data.power_config = temp_data;
+    // 2. Configure Accelerometer (4g FS) -> ACCEL_CONFIG register
+    temp_data = FS_ACCEL_4G; // Usually 0x08 for 4g
+    ret = HAL_I2C_Mem_Write(_hi2c, MPU9250_ADDRESS, REG_ACCEL_CONFIG, 1, &temp_data, 1, 100);
+    if (ret != HAL_OK) return 0;
+    imu_data.accel_config = temp_data;
 
-	return 1;
+    // 3. Configure Gyroscope (500dps FS) -> GYRO_CONFIG register
+    temp_data = FS_GYRO_500DPS; // Usually 0x08 for 500dps
+    ret = HAL_I2C_Mem_Write(_hi2c, MPU9250_ADDRESS, REG_GYRO_CONFIG, 1, &temp_data, 1, 100);
+    if (ret != HAL_OK) return 0;
+    imu_data.gyro_config = temp_data;
+
+    return 1;
+}
+
+void mpu9250_calibrate(void)
+{
+    uint8_t data[14];
+
+    long total_off_gx = 0;
+    long total_off_gy = 0;
+    long total_off_gz = 0;
+
+    long total_off_ax = 0;
+    long total_off_ay = 0;
+    long total_off_az = 0;
+
+    for (int i = 0; i < 100; ++i)
+    {
+        // Start reading from ACCEL_XOUT_H
+        HAL_I2C_Mem_Read(_hi2c, MPU9250_ADDRESS, REG_ACCEL_XOUT_H, 1, data, 14, 100);
+
+        // MPU9250 is Big Endian (High Byte First)
+        // Gyro is at indices 8 to 13 (after Accel and Temp)
+        int16_t curr_off_gx = ((int16_t)data[8] << 8) | data[9];
+        int16_t curr_off_gy = ((int16_t)data[10] << 8) | data[11];
+        int16_t curr_off_gz = ((int16_t)data[12] << 8) | data[13];
+
+        total_off_gx += curr_off_gx;
+        total_off_gy += curr_off_gy;
+        total_off_gz += curr_off_gz;
+
+        HAL_Delay(3);
+    }
+
+    // TODO: Add Accelerometer calibration
+    offset_ax = 0;
+    offset_ay = 0;
+    offset_az = 0;
+
+    offset_gx = (total_off_gx / 100.0f) * ANG_VEL_SENSITIVITY_500DPS;
+    offset_gy = (total_off_gy / 100.0f) * ANG_VEL_SENSITIVITY_500DPS;
+    offset_gz = (total_off_gz / 100.0f) * ANG_VEL_SENSITIVITY_500DPS;
 }
 
 uint8_t mpu9250_read(void)
 {
-	if (imu_data.state == SENSOR_STATE_LOST)
-	{
-		if (!mpu9250_check_connection())
-			return 0;
+    if (imu_data.state == SENSOR_STATE_LOST)
+    {
+        if (!mpu9250_check_connection())
+            return 0;
 
-		if (!mpu9250_configure())
-			return 0;
-	}
+        if (!mpu9250_configure())
+            return 0;
+    }
 
-	// 14-byte buffer: accel(6) + temp(2) + gyro(6)
-	uint8_t data[14];
-	HAL_StatusTypeDef ret;
+    uint8_t buffer[14];
+    // Start reading from ACCEL_XOUT_H (0x3B)
+    HAL_StatusTypeDef ret = HAL_I2C_Mem_Read(_hi2c, MPU9250_ADDRESS, REG_ACCEL_XOUT_H, 1, buffer, 14, 100);
 
-	ret = HAL_I2C_Mem_Read(_hi2c, MPU9250_ADDRESS, REG_ACCEL_DATA, 1, data, 14, 100);
+    if (ret != HAL_OK)
+    {
+        imu_data.state = SENSOR_STATE_LOST;
+        return 0;
+    }
 
-	if (ret != HAL_OK)
-	{
-		imu_data.state = SENSOR_STATE_LOST;
-		return 0;
-	}
+    // MPU9250 is Big Endian
+    // [0-5]: Accel, [6-7]: Temp, [8-13]: Gyro
+    int16_t x_accel = ((int16_t)buffer[0] << 8) | buffer[1];
+    int16_t y_accel = ((int16_t)buffer[2] << 8) | buffer[3];
+    int16_t z_accel = ((int16_t)buffer[4] << 8) | buffer[5];
 
-	int16_t x_accel;
-	int16_t y_accel;
-	int16_t z_accel;
+    int16_t x_gyro  = ((int16_t)buffer[8] << 8) | buffer[9];
+    int16_t y_gyro  = ((int16_t)buffer[10] << 8) | buffer[11];
+    int16_t z_gyro  = ((int16_t)buffer[12] << 8) | buffer[13];
 
-	int16_t x_gyro;
-	int16_t y_gyro;
-	int16_t z_gyro;
+    // Unit Conversions + Offset Application
+    float x_accel_ms2 = (x_accel * LIN_ACCEL_SENSITIVITY_4G) * GRAVITY - offset_ax;
+    float y_accel_ms2 = (y_accel * LIN_ACCEL_SENSITIVITY_4G) * GRAVITY - offset_ay;
+    float z_accel_ms2 = (z_accel * LIN_ACCEL_SENSITIVITY_4G) * GRAVITY + offset_az;
 
-	// Get raw data from IMU
-	x_accel = ((int16_t)data[0] << 8) + data[1];
-	y_accel = ((int16_t)data[2] << 8) + data[3];
-	z_accel = ((int16_t)data[4] << 8) + data[5];
-	x_gyro = ((int16_t)data[8] << 8) + data[9];
-	y_gyro = ((int16_t)data[10] << 8) + data[11];
-	z_gyro = ((int16_t)data[12] << 8) + data[13];
+    float x_gyro_dps = (x_gyro * ANG_VEL_SENSITIVITY_500DPS) - offset_gx;
+    float y_gyro_dps = (y_gyro * ANG_VEL_SENSITIVITY_500DPS) - offset_gy;
+    float z_gyro_dps = (z_gyro * ANG_VEL_SENSITIVITY_500DPS) - offset_gz;
 
-	// Calibrate IMU by calculating offset
-	if (!calibrated)
-	{
+    imu_data.accel.filt_x = x_accel_ms2;
+    imu_data.accel.filt_y = y_accel_ms2;
+    imu_data.accel.filt_z = z_accel_ms2;
 
-		float total_off_gx = 0, total_off_gy = 0, total_off_gz  = 0;
-		float total_off_ax = 0, total_off_ay = 0, total_off_az = 0;
+    imu_data.gyro.filt_x = x_gyro_dps;
+    imu_data.gyro.filt_y = y_gyro_dps;
+    imu_data.gyro.filt_z = z_gyro_dps;
 
-		int sample_num = 100;
+    // Store raw data in Struct
+    imu_data.accel.x = x_accel;
+    imu_data.accel.y = y_accel;
+    imu_data.accel.z = z_accel;
+    imu_data.gyro.x  = x_gyro;
+    imu_data.gyro.y  = y_gyro;
+    imu_data.gyro.z  = z_gyro;
 
-		for(int i = 0; i<sample_num; ++i)
-		{
-			HAL_I2C_Mem_Read(_hi2c, MPU9250_ADDRESS, REG_ACCEL_DATA, 1, data, 14, 100);
-
-			int16_t curr_off_ax = ((int16_t)data[0] << 8) + data[1];
-			int16_t curr_off_ay = ((int16_t)data[2] << 8) + data[3];
-			int16_t curr_off_az = ((int16_t)data[4] << 8) + data[5];
-
-			int16_t curr_off_gx = ((int16_t)data[8] << 8) + data[9];
-			int16_t curr_off_gy = ((int16_t)data[10] << 8) + data[11];
-			int16_t curr_off_gz = ((int16_t)data[12] << 8) + data[13];
-
-
-			total_off_ax += (LIN_ACCEL_SENSITIVITY_4G * curr_off_ax) * GRAVITY;
-			total_off_ay += (LIN_ACCEL_SENSITIVITY_4G * curr_off_ay) * GRAVITY;
-			total_off_az += (LIN_ACCEL_SENSITIVITY_4G * curr_off_az) * GRAVITY;
-
-			total_off_gx += (ANG_VEL_SENSITIVITY_500DPS * curr_off_gx);
-			total_off_gy += (ANG_VEL_SENSITIVITY_500DPS * curr_off_gy);
-			total_off_gz += (ANG_VEL_SENSITIVITY_500DPS * curr_off_gz);
-
-			HAL_Delay(3);
-		}
-
-		offset_ax = total_off_ax / sample_num;
-		offset_ay = total_off_ay / sample_num;
-		offset_az = GRAVITY - (total_off_az / sample_num);
-
-		offset_gx = total_off_gx / sample_num;
-		offset_gy = total_off_gy / sample_num;
-		offset_gz = total_off_gz / sample_num;
-
-		calibrated = 1;
-	}
-
-	// Unit Conversions + Offset Application
-	float x_accel_ms2 = (x_accel * LIN_ACCEL_SENSITIVITY_4G) * GRAVITY - offset_ax;
-	float y_accel_ms2 = (y_accel * LIN_ACCEL_SENSITIVITY_4G) * GRAVITY - offset_ay;
-	float z_accel_ms2 = (z_accel * LIN_ACCEL_SENSITIVITY_4G) * GRAVITY + offset_az;
-
-	float x_gyro_dps = (x_gyro * ANG_VEL_SENSITIVITY_500DPS) - offset_gx;
-	float y_gyro_dps = (y_gyro * ANG_VEL_SENSITIVITY_500DPS) - offset_gy;
-	float z_gyro_dps = (z_gyro * ANG_VEL_SENSITIVITY_500DPS) - offset_gz;
-
-	// Low Pass Filter (y[n] = a*x[n] + (1-a)*y[n-1])
-	float alpha = 0.5f; // lower alpha = more smoothing (0.0-1.0)
-
-	// Store filter in Struct
-	imu_data.accel.filt_x = (alpha * x_accel_ms2) + (1.0f - alpha) * imu_data.accel.filt_x;
-	imu_data.accel.filt_y = (alpha * y_accel_ms2) + (1.0f - alpha) * imu_data.accel.filt_y;
-	imu_data.accel.filt_z = (alpha * z_accel_ms2) + (1.0f - alpha) * imu_data.accel.filt_z;
-
-	imu_data.gyro.filt_x = (alpha * x_gyro_dps) + (1.0f - alpha) * imu_data.gyro.filt_x;
-	imu_data.gyro.filt_y = (alpha * y_gyro_dps) + (1.0f - alpha) * imu_data.gyro.filt_y;
-	imu_data.gyro.filt_z = (alpha * z_gyro_dps) + (1.0f - alpha) * imu_data.gyro.filt_z;
-
-	// Store raw data in Struct
-	imu_data.accel.x = x_accel; imu_data.accel.y = y_accel; imu_data.accel.z = z_accel;
-	imu_data.gyro.x = x_gyro; imu_data.gyro.y = y_gyro; imu_data.gyro.z = z_gyro;
-
-	return 1;
+    return 1;
 }
 
-MPU9250_Data_t* mpu9250_get_data(void)
+uint8_t mpu9250_init_dma_read(void)
 {
-	return &imu_data;
+    if (imu_data.state == SENSOR_STATE_LOST)
+    {
+        if (!mpu9250_check_connection())
+            return 0;
+
+        if (!mpu9250_configure())
+            return 0;
+    }
+
+    // Burst Read 14 Bytes starting from REG_ACCEL_XOUT_H (0x3B)
+    HAL_StatusTypeDef ret = HAL_I2C_Mem_Read_DMA(
+        _hi2c,
+        MPU9250_ADDRESS,
+        REG_ACCEL_XOUT_H,
+        1,
+        dma_rx_buffer,
+        14); // 14 bytes captures Accel -> Temp -> Gyro
+
+    if (ret != HAL_OK)
+    {
+        imu_data.state = SENSOR_STATE_LOST;
+        return 0;
+    }
+
+    return 1;
+}
+
+void HAL_I2C_MemRxCpltCallback(I2C_HandleTypeDef *hi2c)
+{
+    if (hi2c->Instance == _hi2c->Instance)
+    {
+        // Buffer Layout (Big Endian): [0-5] -> Accel, [6-7] -> Temp, [8-13] -> Gyro
+        int16_t x_accel = ((int16_t)dma_rx_buffer[0] << 8) | dma_rx_buffer[1];
+        int16_t y_accel = ((int16_t)dma_rx_buffer[2] << 8) | dma_rx_buffer[3];
+        int16_t z_accel = ((int16_t)dma_rx_buffer[4] << 8) | dma_rx_buffer[5];
+
+        int16_t x_gyro  = ((int16_t)dma_rx_buffer[8] << 8) | dma_rx_buffer[9];
+        int16_t y_gyro  = ((int16_t)dma_rx_buffer[10] << 8) | dma_rx_buffer[11];
+        int16_t z_gyro  = ((int16_t)dma_rx_buffer[12] << 8) | dma_rx_buffer[13];
+
+        // Unit Conversions + Offset Application
+        float x_accel_ms2 = (x_accel * LIN_ACCEL_SENSITIVITY_4G) * GRAVITY - offset_ax;
+        float y_accel_ms2 = (y_accel * LIN_ACCEL_SENSITIVITY_4G) * GRAVITY - offset_ay;
+        float z_accel_ms2 = (z_accel * LIN_ACCEL_SENSITIVITY_4G) * GRAVITY + offset_az;
+
+        float x_gyro_dps = (x_gyro * ANG_VEL_SENSITIVITY_500DPS) - offset_gx;
+        float y_gyro_dps = (y_gyro * ANG_VEL_SENSITIVITY_500DPS) - offset_gy;
+        float z_gyro_dps = (z_gyro * ANG_VEL_SENSITIVITY_500DPS) - offset_gz;
+
+        // Direct assignment
+        imu_data.accel.filt_x = x_accel_ms2;
+        imu_data.accel.filt_y = y_accel_ms2;
+        imu_data.accel.filt_z = z_accel_ms2;
+
+        imu_data.gyro.filt_x = x_gyro_dps;
+        imu_data.gyro.filt_y = y_gyro_dps;
+        imu_data.gyro.filt_z = z_gyro_dps;
+
+        // Store raw data
+        imu_data.accel.x = x_accel;
+        imu_data.accel.y = y_accel;
+        imu_data.accel.z = z_accel;
+
+        imu_data.gyro.x = x_gyro;
+        imu_data.gyro.y = y_gyro;
+        imu_data.gyro.z = z_gyro;
+    }
+}
+
+MPU9250_Data_t *mpu9250_get_data(void)
+{
+    return &imu_data;
 }

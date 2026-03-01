@@ -105,6 +105,30 @@ int main(void)
   MX_GPIO_Init();
   MX_USART2_UART_Init();
   MX_I2C3_Init();
+
+  /* USER CODE BEGIN 2 */
+	HAL_CAN_Start(&hcan1);
+
+	// I2C BUS SCANNER
+	char scan_buf[50];
+	int slen = sprintf(scan_buf, "\r\nStarting I2C Scan...\r\n");
+	HAL_UART_Transmit(&huart2, (uint8_t*)scan_buf, slen, 100);
+
+  // This never printed (ran many times), so no devices found. This indicates a faulty or dead sensor.
+	for(uint8_t i = 1; i < 128; i++) {
+		if(HAL_I2C_IsDeviceReady(&hi2c3, (uint16_t)(i<<1), 3, 5) == HAL_OK) {
+			slen = sprintf(scan_buf, ">>> DEVICE FOUND AT: 0x%02X <<<\r\n", i);
+			HAL_UART_Transmit(&huart2, (uint8_t*)scan_buf, slen, 100);
+		}
+	}
+
+	slen = sprintf(scan_buf, "Scan Complete.\r\n");
+	HAL_UART_Transmit(&huart2, (uint8_t*)scan_buf, slen, 100);
+
+	mpu9250_init_driver(&hi2c3);
+	HAL_UART_Receive_IT(&huart2, rx_data, 1);
+	/* USER CODE END 2 */
+
   MX_CAN1_Init();
   /* USER CODE BEGIN 2 */
   HAL_CAN_Start(&hcan1);
@@ -128,7 +152,25 @@ int main(void)
     {
       cmd_ready = 0;
       process_command();
+
     }
+
+    MPU9250_Data_t *imu = mpu9250_get_data();
+
+    uint8_t can_tx_data[8] = {0};
+
+    // Pack X, Y, Z (Little Endian format for the wire)
+    can_tx_data[0] = imu->accel.x & 0xFF;         // X Low Byte
+    can_tx_data[1] = (imu->accel.x >> 8) & 0xFF;  // X High Byte
+
+    can_tx_data[2] = imu->accel.y & 0xFF;         // Y Low Byte
+    can_tx_data[3] = (imu->accel.y >> 8) & 0xFF;  // Y High Byte
+
+    can_tx_data[4] = imu->accel.z & 0xFF;         // Z Low Byte
+    can_tx_data[5] = (imu->accel.z >> 8) & 0xFF;  // Z High Byte
+
+    // Send the frame...
+    HAL_CAN_AddTxMessage(&hcan1, &TxHeader, can_tx_data, &TxMailbox);
 
     // Add a small delay
     HAL_Delay(20);
@@ -321,6 +363,12 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(LD2_GPIO_Port, &GPIO_InitStruct);
 
+  /*Configure GPIO pin : PB10 */
+  GPIO_InitStruct.Pin = GPIO_PIN_10;
+  GPIO_InitStruct.Mode = GPIO_MODE_IT_RISING;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
+
   /* USER CODE BEGIN MX_GPIO_Init_2 */
 
   /* USER CODE END MX_GPIO_Init_2 */
@@ -332,7 +380,7 @@ void CAN_Send_IMU_Data(void)
 {
   MPU9250_Data_t *imu = mpu9250_get_data();
 
-  // We only send if the sensor is actually connected
+  // UNCOMMENT the safety guard
   if (imu->state != SENSOR_STATE_CONNECTED) return;
 
   TxHeader.StdId = 0x123;
@@ -340,21 +388,17 @@ void CAN_Send_IMU_Data(void)
   TxHeader.RTR = CAN_RTR_DATA;
   TxHeader.DLC = 8;
 
-  // Mapping float (m/s^2) to int16 to fit in CAN frame (Multiply by 100 for precision)
+  // data mapping
   int16_t ax = (int16_t)(imu->accel.filt_x * 100);
   int16_t ay = (int16_t)(imu->accel.filt_y * 100);
   int16_t az = (int16_t)(imu->accel.filt_z * 100);
 
   TxData[0] = (ax >> 8) & 0xFF;
   TxData[1] = ax & 0xFF;
-  TxData[2] = (ay >> 8) & 0xFF;
-  TxData[3] = ay & 0xFF;
-  TxData[4] = (az >> 8) & 0xFF;
-  TxData[5] = az & 0xFF;
-  TxData[6] = 0x00; // Extra padding
-  TxData[7] = 0x00;
 
-  HAL_CAN_AddTxMessage(&hcan1, &TxHeader, TxData, &TxMailbox);
+  if (HAL_CAN_GetTxMailboxesFreeLevel(&hcan1) > 0) {
+      HAL_CAN_AddTxMessage(&hcan1, &TxHeader, TxData, &TxMailbox);
+  }
 }
 
 void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
