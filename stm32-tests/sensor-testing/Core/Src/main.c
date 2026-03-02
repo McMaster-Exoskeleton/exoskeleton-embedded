@@ -1,20 +1,20 @@
 /* USER CODE BEGIN Header */
 /**
-  ******************************************************************************
-  * @file           : main.c
-  * @brief          : Main program body
-  ******************************************************************************
-  * @attention
-  *
-  * Copyright (c) 2026 STMicroelectronics.
-  * All rights reserved.
-  *
-  * This software is licensed under terms that can be found in the LICENSE file
-  * in the root directory of this software component.
-  * If no LICENSE file comes with this software, it is provided AS-IS.
-  *
-  ******************************************************************************
-  */
+ ******************************************************************************
+ * @file           : main.c
+ * @brief          : Main program body
+ ******************************************************************************
+ * @attention
+ *
+ * Copyright (c) 2026 STMicroelectronics.
+ * All rights reserved.
+ *
+ * This software is licensed under terms that can be found in the LICENSE file
+ * in the root directory of this software component.
+ * If no LICENSE file comes with this software, it is provided AS-IS.
+ *
+ ******************************************************************************
+ */
 /* USER CODE END Header */
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
@@ -43,6 +43,7 @@
 
 /* Private variables ---------------------------------------------------------*/
 I2C_HandleTypeDef hi2c3;
+DMA_HandleTypeDef hdma_i2c3_rx;
 
 UART_HandleTypeDef huart2;
 
@@ -57,6 +58,7 @@ volatile uint8_t cmd_ready = 0;
 /* Private function prototypes -----------------------------------------------*/
 void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
+static void MX_DMA_Init(void);
 static void MX_USART2_UART_Init(void);
 static void MX_I2C3_Init(void);
 /* USER CODE BEGIN PFP */
@@ -97,33 +99,40 @@ int main(void)
 
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
+  MX_DMA_Init();
   MX_USART2_UART_Init();
   MX_I2C3_Init();
   /* USER CODE BEGIN 2 */
-  lsm6ds3tr_init_driver(&hi2c3);
-  HAL_UART_Receive_IT(&huart2, rx_data, 1);
+	lsm6ds3tr_init_driver(&hi2c3);
+	HAL_UART_Receive_IT(&huart2, rx_data, 1);
+
+	// Calibration ~ 3 seconds
+	lsm6ds3tr_calibrate();
+
   /* USER CODE END 2 */
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
-  while (1)
-  {
+	while (1)
+	{
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
 
-	// ALWAYS read values
-	lsm6ds3tr_read();
+		// ALWAYS read values
 
-    if (cmd_ready)
-    {
-      cmd_ready = 0;
-      process_command();
-    }
+		if (cmd_ready)
+		{
+			cmd_ready = 0;
+			
+			process_command();
+		}
 
-    // Add a small delay
-    HAL_Delay(10);
-  }
+		lsm6ds3tr_init_dma_read();
+
+		// Add a small delay
+		HAL_Delay(10);
+	}
   /* USER CODE END 3 */
 }
 
@@ -242,6 +251,22 @@ static void MX_USART2_UART_Init(void)
 }
 
 /**
+  * Enable DMA controller clock
+  */
+static void MX_DMA_Init(void)
+{
+
+  /* DMA controller clock enable */
+  __HAL_RCC_DMA1_CLK_ENABLE();
+
+  /* DMA interrupt init */
+  /* DMA1_Stream1_IRQn interrupt configuration */
+  HAL_NVIC_SetPriority(DMA1_Stream1_IRQn, 0, 0);
+  HAL_NVIC_EnableIRQ(DMA1_Stream1_IRQn);
+
+}
+
+/**
   * @brief GPIO Initialization Function
   * @param None
   * @retval None
@@ -284,74 +309,74 @@ static void MX_GPIO_Init(void)
 
 void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
 {
-  UNUSED(huart);
+	UNUSED(huart);
 
-  if (rx_data[0] == '\n' || rx_data[0] == '\r')
-  {
-    if (rx_index > 0)
-    {
-      rx_buffer[rx_index] = '\0';
-      cmd_ready = 1;
-      rx_index = 0;
-    }
-  }
-  else if (rx_index < sizeof(rx_buffer) - 1)
-  {
-    rx_buffer[rx_index++] = rx_data[0];
-  }
+	if (rx_data[0] == '\n' || rx_data[0] == '\r')
+	{
+		if (rx_index > 0)
+		{
+			rx_buffer[rx_index] = '\0';
+			cmd_ready = 1;
+			rx_index = 0;
+		}
+	}
+	else if (rx_index < sizeof(rx_buffer) - 1)
+	{
+		rx_buffer[rx_index++] = rx_data[0];
+	}
 
-  HAL_UART_Receive_IT(&huart2, rx_data, 1);
+	HAL_UART_Receive_IT(&huart2, rx_data, 1);
 }
 
 static void process_command(void)
 {
-  LSM6DS3TR_Data_t *imu = lsm6ds3tr_get_data();
-  uint16_t len;
+	LSM6DS3TR_Data_t *imu = lsm6ds3tr_get_data();
+	uint16_t len;
 
-  if (strcmp((char*)rx_buffer, "READ") == 0)
-  {
+	if (strcmp((char *)rx_buffer, "READ") == 0)
+	{
 
-    len = sprintf((char*)tx_buffer,
-        "AX:%.2f AY:%.2f AZ:%.2f GX:%.2f GY:%.2f GZ:%.2f\r\n",
-        imu->accel.filt_x, imu->accel.filt_y, imu->accel.filt_z,
-        imu->gyro.filt_x, imu->gyro.filt_y, imu->gyro.filt_z);
-    HAL_UART_Transmit(&huart2, tx_buffer, len, 100);
-  }
-  else if (strcmp((char*)rx_buffer, "STATUS") == 0)
-  {
-    lsm6ds3tr_check_connection();
-    if (imu->state == SENSOR_STATE_CONNECTED)
-    {
-      len = sprintf((char*)tx_buffer, "STATUS:CONNECTED\r\n");
-    }
-    else
-    {
-      len = sprintf((char*)tx_buffer, "STATUS:LOST\r\n");
-    }
-    HAL_UART_Transmit(&huart2, tx_buffer, len, 100);
-  }
-  else if (strcmp((char*)rx_buffer, "REGISTER") == 0)
-  {
-    len = sprintf((char*)tx_buffer, "REGISTER:0x%02X\r\n", DEVICE_ADDRESS);
-    HAL_UART_Transmit(&huart2, tx_buffer, len, 100);
-  }
-  else if (strcmp((char*)rx_buffer, "CONFIG") == 0)
-  {
-    len = sprintf((char*)tx_buffer,
-        "GYRO_CFG:0x%02X ACCEL_CFG:0x%02X\r\n",
-        imu->gyro_config, imu->accel_config);
-    HAL_UART_Transmit(&huart2, tx_buffer, len, 100);
-  }
-  else if (strcmp((char*)rx_buffer, "POWER") == 0)
-  {
-    len = sprintf((char*)tx_buffer, "POWER_CFG:0x%02X\r\n", imu->power_config);
-    HAL_UART_Transmit(&huart2, tx_buffer, len, 100);
-  }
-  else
-  {
-    len = sprintf((char*)tx_buffer, "ERR:UNKNOWN_CMD\r\n");
-    HAL_UART_Transmit(&huart2, tx_buffer, len, 100);
-  }
+		len = sprintf((char *)tx_buffer,
+					  "AX:%.2f AY:%.2f AZ:%.2f GX:%.2f GY:%.2f GZ:%.2f\r\n",
+					  imu->accel.filt_x, imu->accel.filt_y, imu->accel.filt_z,
+					  imu->gyro.filt_x, imu->gyro.filt_y, imu->gyro.filt_z);
+		HAL_UART_Transmit(&huart2, tx_buffer, len, 100);
+	}
+	else if (strcmp((char *)rx_buffer, "STATUS") == 0)
+	{
+		lsm6ds3tr_check_connection();
+		if (imu->state == SENSOR_STATE_CONNECTED)
+		{
+			len = sprintf((char *)tx_buffer, "STATUS:CONNECTED\r\n");
+		}
+		else
+		{
+			len = sprintf((char *)tx_buffer, "STATUS:LOST\r\n");
+		}
+		HAL_UART_Transmit(&huart2, tx_buffer, len, 100);
+	}
+	else if (strcmp((char *)rx_buffer, "REGISTER") == 0)
+	{
+		len = sprintf((char *)tx_buffer, "REGISTER:0x%02X\r\n", DEVICE_ADDRESS);
+		HAL_UART_Transmit(&huart2, tx_buffer, len, 100);
+	}
+	else if (strcmp((char *)rx_buffer, "CONFIG") == 0)
+	{
+		len = sprintf((char *)tx_buffer,
+					  "GYRO_CFG:0x%02X ACCEL_CFG:0x%02X\r\n",
+					  imu->gyro_config, imu->accel_config);
+		HAL_UART_Transmit(&huart2, tx_buffer, len, 100);
+	}
+	else if (strcmp((char *)rx_buffer, "POWER") == 0)
+	{
+		len = sprintf((char *)tx_buffer, "POWER_CFG:0x%02X\r\n", imu->power_config);
+		HAL_UART_Transmit(&huart2, tx_buffer, len, 100);
+	}
+	else
+	{
+		len = sprintf((char *)tx_buffer, "ERR:UNKNOWN_CMD\r\n");
+		HAL_UART_Transmit(&huart2, tx_buffer, len, 100);
+	}
 }
 
 /* USER CODE END 4 */
@@ -363,11 +388,11 @@ static void process_command(void)
 void Error_Handler(void)
 {
   /* USER CODE BEGIN Error_Handler_Debug */
-  /* User can add his own implementation to report the HAL error return state */
-  __disable_irq();
-  while (1)
-  {
-  }
+	/* User can add his own implementation to report the HAL error return state */
+	__disable_irq();
+	while (1)
+	{
+	}
   /* USER CODE END Error_Handler_Debug */
 }
 #ifdef USE_FULL_ASSERT
@@ -381,8 +406,8 @@ void Error_Handler(void)
 void assert_failed(uint8_t *file, uint32_t line)
 {
   /* USER CODE BEGIN 6 */
-  /* User can add his own implementation to report the file name and line number,
-     ex: printf("Wrong parameters value: file %s on line %d\r\n", file, line) */
+	/* User can add his own implementation to report the file name and line number,
+	   ex: printf("Wrong parameters value: file %s on line %d\r\n", file, line) */
   /* USER CODE END 6 */
 }
 #endif /* USE_FULL_ASSERT */

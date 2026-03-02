@@ -174,4 +174,12 @@
 			<resource resourceType="PROJECT" workspacePath="/sensor-testing"/>
 		</configuration>
 	</storageModule>
+	<storageModule moduleId="refreshScope" versionNumber="2">
+		<configuration configurationName="Debug">
+			<resource resourceType="PROJECT" workspacePath="/sensor-testing"/>
+		</configuration>
+		<configuration configurationName="Release">
+			<resource resourceType="PROJECT" workspacePath="/sensor-testing"/>
+		</configuration>
+	</storageModule>
 </cproject>
