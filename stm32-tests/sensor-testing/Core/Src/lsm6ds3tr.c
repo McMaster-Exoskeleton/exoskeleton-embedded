@@ -55,21 +55,23 @@ void lsm6ds3tr_init_driver(I2C_HandleTypeDef *hi2c)
 
 uint8_t lsm6ds3tr_check_connection(void)
 {
-	uint8_t who_am_i;
+    // Don't interrupt if the I2C bus is currently busy with DMA
+    if (HAL_I2C_GetState(_hi2c) != HAL_I2C_STATE_READY) {
+        // If we are busy, we are still connected.
+        return (imu_data.state == SENSOR_STATE_CONNECTED) ? 1 : 0;
+    }
 
-	// Read WHO_AM_I register
-	HAL_StatusTypeDef ret = HAL_I2C_Mem_Read(_hi2c, LSM6DS3TR_ADDRESS, REG_WHO_AM_I, 1, &who_am_i, 1, 100);
+    uint8_t who_am_i;
+    HAL_StatusTypeDef ret = HAL_I2C_Mem_Read(_hi2c, LSM6DS3TR_ADDRESS, REG_WHO_AM_I, 1, &who_am_i, 1, 100);
 
-	if (ret == HAL_OK && who_am_i == WHO_AM_I_VAL)
-	{
-		imu_data.state = SENSOR_STATE_CONNECTED;
+    if (ret == HAL_OK && who_am_i == WHO_AM_I_VAL)
+    {
+        imu_data.state = SENSOR_STATE_CONNECTED;
+        return 1;
+    }
 
-		return 1;
-	}
-
-	imu_data.state = SENSOR_STATE_LOST;
-
-	return 0;
+    imu_data.state = SENSOR_STATE_LOST;
+    return 0;
 }
 
 uint8_t lsm6ds3tr_configure(void)
@@ -123,9 +125,9 @@ void lsm6ds3tr_calibrate(void)
 	{
 		HAL_I2C_Mem_Read(_hi2c, LSM6DS3TR_ADDRESS, REG_OUTX_L_G, 1, data, 12, 100);
 
-		int16_t curr_off_gx = ((int16_t)data[1] << 8) + data[0];
-		int16_t curr_off_gy = ((int16_t)data[3] << 8) + data[2];
-		int16_t curr_off_gz = ((int16_t)data[5] << 8) + data[4];
+		int16_t curr_off_ax = ((int16_t)data[1] << 8) + data[0];
+		int16_t curr_off_ay = ((int16_t)data[3] << 8) + data[2];
+		int16_t curr_off_az = ((int16_t)data[5] << 8) + data[4];
 
 		int16_t curr_off_gx = ((int16_t)data[7] << 8) + data[6];
 		int16_t curr_off_gy = ((int16_t)data[9] << 8) + data[8];
@@ -147,7 +149,7 @@ void lsm6ds3tr_calibrate(void)
 	offset_gy = (total_off_gy / 100) * ANG_VEL_SENSITIVITY_500DPS;
 	offset_gz = (total_off_gz / 100) * ANG_VEL_SENSITIVITY_500DPS;
 
-	return 1;
+	calibrated = 1;
 }
 
 uint8_t lsm6ds3tr_read(void)

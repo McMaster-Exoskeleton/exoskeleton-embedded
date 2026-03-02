@@ -10,7 +10,7 @@
 #include "stm32f4xx_hal.h"
 #include <stdint.h>
 
-#define DEVICE_ADDRESS 0b1101010 // SA0 pin LOW
+#define DEVICE_ADDRESS 0b1101011 // SA0 pin HIGH
 #define LSM6DS3TR_ADDRESS (DEVICE_ADDRESS << 1)
 
 // Scale selections (for configuration)
