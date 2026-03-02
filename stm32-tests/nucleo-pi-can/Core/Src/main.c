@@ -17,13 +17,13 @@
   */
 /* USER CODE END Header */
 /* Includes ------------------------------------------------------------------*/
+#include <lsm6ds3tr.h>
 #include "main.h"
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include <stdio.h>
 #include <string.h>
-#include "mpu9250.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -106,33 +106,10 @@ int main(void)
   MX_USART2_UART_Init();
   MX_I2C3_Init();
 
-  /* USER CODE BEGIN 2 */
-	HAL_CAN_Start(&hcan1);
-
-	// I2C BUS SCANNER
-	char scan_buf[50];
-	int slen = sprintf(scan_buf, "\r\nStarting I2C Scan...\r\n");
-	HAL_UART_Transmit(&huart2, (uint8_t*)scan_buf, slen, 100);
-
-  // This never printed (ran many times), so no devices found. This indicates a faulty or dead sensor.
-	for(uint8_t i = 1; i < 128; i++) {
-		if(HAL_I2C_IsDeviceReady(&hi2c3, (uint16_t)(i<<1), 3, 5) == HAL_OK) {
-			slen = sprintf(scan_buf, ">>> DEVICE FOUND AT: 0x%02X <<<\r\n", i);
-			HAL_UART_Transmit(&huart2, (uint8_t*)scan_buf, slen, 100);
-		}
-	}
-
-	slen = sprintf(scan_buf, "Scan Complete.\r\n");
-	HAL_UART_Transmit(&huart2, (uint8_t*)scan_buf, slen, 100);
-
-	mpu9250_init_driver(&hi2c3);
-	HAL_UART_Receive_IT(&huart2, rx_data, 1);
-	/* USER CODE END 2 */
-
   MX_CAN1_Init();
   /* USER CODE BEGIN 2 */
   HAL_CAN_Start(&hcan1);
-  mpu9250_init_driver(&hi2c3);
+  lsm6ds3tr_init_driver(&hi2c3);
   HAL_UART_Receive_IT(&huart2, rx_data, 1);
   /* USER CODE END 2 */
 
@@ -145,8 +122,6 @@ int main(void)
     /* USER CODE BEGIN 3 */
 
 	// ALWAYS read values
-	mpu9250_read();          // 1. Filtered data
-	CAN_Send_IMU_Data();     // 2. Push to CAN Bus
 
     if (cmd_ready)
     {
@@ -155,22 +130,8 @@ int main(void)
 
     }
 
-    MPU9250_Data_t *imu = mpu9250_get_data();
-
-    uint8_t can_tx_data[8] = {0};
-
-    // Pack X, Y, Z (Little Endian format for the wire)
-    can_tx_data[0] = imu->accel.x & 0xFF;         // X Low Byte
-    can_tx_data[1] = (imu->accel.x >> 8) & 0xFF;  // X High Byte
-
-    can_tx_data[2] = imu->accel.y & 0xFF;         // Y Low Byte
-    can_tx_data[3] = (imu->accel.y >> 8) & 0xFF;  // Y High Byte
-
-    can_tx_data[4] = imu->accel.z & 0xFF;         // Z Low Byte
-    can_tx_data[5] = (imu->accel.z >> 8) & 0xFF;  // Z High Byte
-
-    // Send the frame...
-    HAL_CAN_AddTxMessage(&hcan1, &TxHeader, can_tx_data, &TxMailbox);
+	lsm6ds3tr_read();          // 1. Filtered data
+	CAN_Send_IMU_Data();     // 2. Push to CAN Bus
 
     // Add a small delay
     HAL_Delay(20);
@@ -378,23 +339,32 @@ static void MX_GPIO_Init(void)
 
 void CAN_Send_IMU_Data(void)
 {
-  MPU9250_Data_t *imu = mpu9250_get_data();
+  LSM6DS3TR_Data_t *imu = lsm6ds3tr_get_data();
 
-  // UNCOMMENT the safety guard
+  // Safety guard
   if (imu->state != SENSOR_STATE_CONNECTED) return;
 
   TxHeader.StdId = 0x123;
   TxHeader.IDE = CAN_ID_STD;
   TxHeader.RTR = CAN_RTR_DATA;
-  TxHeader.DLC = 8;
+  TxHeader.DLC = 6; // Changed to 6 bytes (2 bytes each for X, Y, Z)
 
   // data mapping
   int16_t ax = (int16_t)(imu->accel.filt_x * 100);
   int16_t ay = (int16_t)(imu->accel.filt_y * 100);
   int16_t az = (int16_t)(imu->accel.filt_z * 100);
 
+  // Pack X
   TxData[0] = (ax >> 8) & 0xFF;
   TxData[1] = ax & 0xFF;
+
+  // Pack Y
+  TxData[2] = (ay >> 8) & 0xFF;
+  TxData[3] = ay & 0xFF;
+
+  // Pack Z
+  TxData[4] = (az >> 8) & 0xFF;
+  TxData[5] = az & 0xFF;
 
   if (HAL_CAN_GetTxMailboxesFreeLevel(&hcan1) > 0) {
       HAL_CAN_AddTxMessage(&hcan1, &TxHeader, TxData, &TxMailbox);
@@ -424,7 +394,7 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
 
 static void process_command(void)
 {
-  MPU9250_Data_t *imu = mpu9250_get_data();
+  LSM6DS3TR_Data_t *imu = lsm6ds3tr_get_data();
   uint16_t len;
 
   if (strcmp((char*)rx_buffer, "READ") == 0)
@@ -438,7 +408,7 @@ static void process_command(void)
   }
   else if (strcmp((char*)rx_buffer, "STATUS") == 0)
   {
-    mpu9250_check_connection();
+    lsm6ds3tr_check_connection();
     if (imu->state == SENSOR_STATE_CONNECTED)
     {
       len = sprintf((char*)tx_buffer, "STATUS:CONNECTED\r\n");
