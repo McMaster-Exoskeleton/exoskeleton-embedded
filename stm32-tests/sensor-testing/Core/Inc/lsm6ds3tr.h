@@ -10,8 +10,8 @@
 #include "stm32f4xx_hal.h"
 #include <stdint.h>
 
-#define DEVICE_ADDRESS 0b1101011 // SA0 pin HIGH
-#define LSM6DS3TR_ADDRESS (DEVICE_ADDRESS << 1)
+#define DEVICE_ADDRESS		0b1101011 // SA0 pin HIGH
+#define LSM6DS3TR_ADDRESS	(DEVICE_ADDRESS << 1)
 
 // Scale selections (for configuration)
 #define FS_GYRO_500DPS 0b00000100 // 0x04 -> Table 54. of datasheet
