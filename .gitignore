@@ -51,3 +51,5 @@
 **/*.hex
 **/*.bin
 
+# Claude Code
+.claude/
