@@ -9,15 +9,15 @@ extern CAN_HandleTypeDef hcan1;
 static CanBusStm32 g_can;
 
 // Set per-board (compile-time for now)
-static constexpr uint8_t ThisNode = 1; // change to 2 on the other board
-static constexpr uint8_t PeerNode = 2; // the node you wanna talk to
+static constexpr uint8_t ThisNode = 2; // change to 2 on the other board
+static constexpr uint8_t PeerNode = 1; // the node you wanna talk to
 //add more nodes?
 
 
 
 // Initialize CAN
 void CanApp_Init(void) {
-	static_assert(canproto::IsValidNode(kThisNode), "Invalid node id");
+	static_assert(canproto::IsValidNode(ThisNode), "Invalid node id");
 
 	const uint16_t accept_ids[] = {
 	    canproto::CmdId(ThisNode),
@@ -45,9 +45,7 @@ void CanApp_Tick(void) {
 		  cmd.mode  = static_cast<uint8_t>(canproto::ControlMode::Disabled);
 		  cmd.seq   = seq++;
 
-		  (void)g_can.sendStd(canproto::CmdId(PeerNode),
-		                          reinterpret_cast<const uint8_t*>(&cmd),
-		                          sizeof(cmd));
+		  (void)g_can.sendStd(0x555, reinterpret_cast<const uint8_t*>(&cmd), sizeof(cmd));
 	  }
 
 	  // Process any received frames (toggle LED per frame)
