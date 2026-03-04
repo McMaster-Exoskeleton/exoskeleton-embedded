@@ -1,54 +1,23 @@
-# For more options and information see
-# http://rptl.io/configtxt
-# Some settings may impact device functionality. See link above for details
+import can
+import struct
 
-# Uncomment some or all of these to enable the optional hardware interfaces
-dtparam=i2c_arm=on
-#dtparam=i2s=on
-#dtparam=spi=on
+# Initialize bus
+bus = can.interface.Bus(channel="can0", interface="socketcan")
 
-# Enable audio (loads snd_bcm2835)
-dtparam=audio=on
+print("Exoskeleton Telemetry Started...")
 
-# Additional overlays and parameters are documented
-# /boot/firmware/overlays/README
-
-# Automatically load overlays for detected cameras
-camera_auto_detect=1
-
-# Automatically load overlays for detected DSI displays
-display_auto_detect=1
-
-# Automatically load initramfs files, if found
-auto_initramfs=1
-
-# Enable DRM VC4 V3D driver
-dtoverlay=vc4-kms-v3d
-max_framebuffers=2
-
-# Don't have the firmware create an initial video= setting in cmdline.txt.
-# Use the kernel's default instead.
-disable_fw_kms_setup=1
-
-# Run in 64-bit mode
-arm_64bit=1
-
-# Disable compensation for displays with overscan
-disable_overscan=1
-
-# Run as fast as firmware / board allows
-arm_boost=1
-
-[cm4]
-# Enable host mode on the 2711 built-in XHCI USB controller.
-# This line should be removed if the legacy DWC2 controller is required
-# (e.g. for USB device mode) or if USB support is not required.
-otg_mode=1
-
-[cm5]
-dtoverlay=dwc2,dr_mode=host
-
-[all]
-
-dtparam=spi=on
-dtoverlay=mcp2515-can0,oscillator=8000000,interupt=25
+for msg in bus:
+    if msg.arbitration_id == 0x123:
+        # data[0:6] contains AX, AY, AZ packed as 16-bit signed integers (Big Endian)
+        # '>hhh' tells Python to unpack 3 signed shorts
+        try:
+            ax_raw, ay_raw, az_raw = struct.unpack('<hhh', msg.data[0:6])
+            
+            # Divide by 100 because we multiplied by 100 in main.c
+            ax = ax_raw / 100.0
+            ay = ay_raw / 100.0
+            az = az_raw / 100.0
+            
+            print(f"Accel -> X: {ax:6.2f} | Y: {ay:6.2f} | Z: {az:6.2f} m/s²")
+        except Exception as e:
+            print(f"Data error: {e}")
