@@ -24,6 +24,8 @@
 // Control registers
 #define REG_CTRL1_XL		0x10 // Accelerometer control register
 #define REG_CTRL2_G			0x11 // Gyroscope control register
+#define REG_CTRL3_C			0x12 // BDU, Reset
+#define BDU_ENABLE			0x44 // Block Data Update = 1, IF_INC = 1
 
 // #define REG_POW_MAN			107 (come back to this after rewriting .c)
 
@@ -58,10 +60,12 @@ typedef struct
 	uint8_t power_config;
 } LSM6DS3TR_Data_t;
 
-void lsm6ds3tr_init_driver(I2C_HandleTypeDef *hi2c);
+void    lsm6ds3tr_init_driver(I2C_HandleTypeDef *hi2c);
 uint8_t lsm6ds3tr_check_connection(void);
 uint8_t lsm6ds3tr_configure(void);
+void    lsm6ds3tr_calibrate(void);
 uint8_t lsm6ds3tr_read(void);
+uint8_t lsm6ds3tr_init_dma_read(void);
 LSM6DS3TR_Data_t* lsm6ds3tr_get_data(void);
 
 #endif /* INC_LSM6DS3TR_H_ */

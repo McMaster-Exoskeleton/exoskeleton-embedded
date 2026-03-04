@@ -2,7 +2,7 @@
 
 Step-by-step guide for testing IMU-to-CAN transmission using the **nucleo-pi-can** project on a Nucleo-F446RE board.
 
-This project reads accelerometer data from the LSM6DS3TR-C IMU over I2C and continuously broadcasts it over the CAN bus (standard ID `0x123`). A UART command interface is also available for direct debugging.
+This project reads accelerometer and gyroscope data from the LSM6DS3TR-C IMU via DMA-backed I2C, continuously broadcasts accelerometer data over the CAN bus (standard ID `0x123`), and stores the last 100 readings in a C++ circular buffer. A UART command interface is available for direct debugging and buffer readback.
 
 ---
 
@@ -150,18 +150,26 @@ Open a terminal and navigate to the `nucleo-pi-can` project folder:
 cd stm32-tests/nucleo-pi-can
 ```
 
-Run the script (hardcoded to `COM3` by default -- edit the `PORT` variable in the script to match your port):
+Run the script with auto-detection:
 ```bash
 python imu_uart_test.py
 ```
 
+Or specify the COM port directly:
+```bash
+python imu_uart_test.py COM3         # Windows
+python imu_uart_test.py /dev/ttyACM0 # Linux
+```
+
 You should see:
 ```
+Auto-detected port: COM3
 STM32 Nucleo F446RE - IMU UART Test
 ==================================================
-Port: COM3
+Port:      COM3
 Baud Rate: 115200
-Available commands: READ, STATUS, REGISTER, CONFIG, POWER
+Commands:  READ, READLATEST, READALL, STATUS, REGISTER, CONFIG, POWER
+Type 'quit' to exit
 ==================================================
 Connected to COM3
 
@@ -215,11 +223,28 @@ Press `Ctrl+C` to close the Python script.
 
 | Command | Response Format | Description |
 |---|---|---|
-| `READ` | `AX:<val> AY:<val> AZ:<val> GX:<val> GY:<val> GZ:<val>` | Filtered accel (m/s²) and gyro (dps) readings |
+| `READ` | `AX:<val> AY:<val> AZ:<val> GX:<val> GY:<val> GZ:<val>` | Current filtered accel (m/s²) and gyro (dps) from live struct |
+| `READLATEST` | `LATEST AX:<val> AY:<val> AZ:<val> GX:<val> GY:<val> GZ:<val>` | Most recent reading from the 100-sample circular buffer |
+| `READALL` | `ALL:COUNT=<n>` followed by `[i] AX:... GZ:...` per line | All stored readings oldest-first from the circular buffer |
 | `STATUS` | `STATUS:CONNECTED` or `STATUS:LOST` | IMU I2C connection status |
 | `REGISTER` | `REGISTER:0x6B` | I2C device address |
 | `CONFIG` | `GYRO_CFG:0x44 ACCEL_CFG:0x48` | Gyro and accel control register values |
 | `POWER` | `POWER_CFG:0x00` | Power configuration register value |
+
+### READALL Example Output
+
+```
+Command: READALL
+Sent: READALL
+  ALL:COUNT=100
+  [0] AX:0.11 AY:-0.04 AZ:9.77 GX:0.01 GY:0.00 GZ:-0.01
+  [1] AX:0.12 AY:-0.05 AZ:9.78 GX:0.01 GY:0.00 GZ:-0.01
+  ...
+  [99] AX:0.10 AY:-0.03 AZ:9.79 GX:0.00 GY:0.00 GZ:0.00
+  (102 line(s) received)
+```
+
+> **Note:** `READALL` sends 100+ lines over UART at 115200 baud. Expect approximately 2–3 seconds for full output. The Python script handles this automatically.
 
 ---
 
@@ -272,3 +297,55 @@ Press `Ctrl+C` to close the Python script.
 - The board was not reset after flashing.
 
 **Fix:** Re-flash the firmware and press the black reset button on the Nucleo board.
+
+### READALL returns `ALL:EMPTY`
+
+**Cause:** The command was sent before the circular buffer accumulated any readings. This can happen if:
+- The IMU is in `LOST` state (DMA callback is never triggered).
+- The command was sent immediately after power-on before calibration finished.
+
+**Fix:** Wait for `STATUS:CONNECTED`, then wait a second for the buffer to fill, then retry.
+
+### Hard fault / firmware crash on READALL
+
+**Possible cause:** The `IMUReading snapshot[100]` stack allocation (2400 bytes) combined with other stack usage exceeds the available stack.
+
+**Note:** The linker scripts (`STM32F446RETX_FLASH.ld` and `STM32F446RETX_RAM.ld`) have already been updated to `_Min_Stack_Size = 0x1000` (4096 bytes) to accommodate this. If you see a hard fault after regenerating the `.ioc` in CubeMX (which resets the linker script), re-apply this change:
+```
+_Min_Stack_Size = 0x1000;
+```
+
+---
+
+## Implementation Notes
+
+### DMA vs Blocking I2C
+
+The original `nucleo-pi-can` project used `lsm6ds3tr_read()` (blocking `HAL_I2C_Mem_Read`). This held the CPU for ~1.4 ms per read (12 bytes at 100 kHz I2C). With DMA:
+
+- `lsm6ds3tr_init_dma_read()` issues the transfer and returns immediately (<10 µs).
+- The CPU is free for CAN transmission and UART command handling while the 12-byte transfer completes.
+- `HAL_I2C_MemRxCpltCallback()` fires from the DMA ISR when the transfer is done, processes the bytes, and pushes to the buffer.
+
+This is effective for this use case: the 20 ms main-loop delay means the DMA transfer (takes ~1.4 ms) is always complete before the next call.
+
+### Circular Buffer Data Structure
+
+A **ring buffer with a static array** was chosen over alternatives:
+
+| Structure | Push O(1) | Pop O(1) | No heap alloc | ISR-safe copy |
+|---|---|---|---|---|
+| `std::deque` | Yes | Yes | **No** (heap) | No |
+| `std::array` + manual index | Yes | Yes | Yes | Yes |
+| Linked list | O(1) amortized | Yes | **No** (heap) | No |
+| **Ring buffer (chosen)** | **Yes** | **Yes** | **Yes** | **Yes** |
+
+Heap allocation is avoided on bare-metal firmware because `malloc`/`new` can fragment SRAM and fail unpredictably. The static 100-entry array uses 2400 bytes of `.bss`.
+
+### ISR Safety
+
+`HAL_I2C_MemRxCpltCallback` runs from the DMA ISR and calls `imu_buffer_push()`. The UART command handler runs from `main()`. To prevent a torn read (push happening mid-copy), `process_command()` disables `DMA1_Stream1_IRQn` around the `imu_buffer_get_latest()` and `imu_buffer_get_all()` calls, then re-enables it before the (slow) UART transmission.
+
+### Calibration
+
+`lsm6ds3tr_calibrate()` runs once at startup for ~0.3 s (100 samples × 3 ms delay). Keep the sensor **stationary** during power-on. Calibration computes gyroscope bias offsets only; accelerometer offset calibration would require knowing the orientation axis and is left for a future iteration.

@@ -24,6 +24,7 @@
 /* USER CODE BEGIN Includes */
 #include <stdio.h>
 #include <string.h>
+#include "imu_buffer.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -42,26 +43,29 @@
 /* USER CODE END PM */
 
 /* Private variables ---------------------------------------------------------*/
-CAN_HandleTypeDef hcan1;
-
-I2C_HandleTypeDef hi2c3;
-
+CAN_HandleTypeDef  hcan1;
+DMA_HandleTypeDef  hdma_i2c3_rx;
+I2C_HandleTypeDef  hi2c3;
 UART_HandleTypeDef huart2;
 
 /* USER CODE BEGIN PV */
 CAN_TxHeaderTypeDef TxHeader;
-uint8_t TxData[8];
+uint8_t  TxData[8];
 uint32_t TxMailbox;
-uint8_t rx_data[1];
-uint8_t rx_buffer[100];
-uint8_t rx_index = 0;
-uint8_t tx_buffer[256];
+
+uint8_t          rx_data[1];
+uint8_t          rx_buffer[100];
+uint8_t          rx_index = 0;
+/* READALL streams one line at a time, so tx_buffer only needs to hold one
+   formatted reading (~60 chars). 256 bytes gives comfortable margin. */
+uint8_t          tx_buffer[256];
 volatile uint8_t cmd_ready = 0;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
 void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
+static void MX_DMA_Init(void);
 static void MX_USART2_UART_Init(void);
 static void MX_I2C3_Init(void);
 static void MX_CAN1_Init(void);
@@ -103,14 +107,19 @@ int main(void)
 
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
+  MX_DMA_Init();          // Must be called before MX_I2C3_Init
   MX_USART2_UART_Init();
   MX_I2C3_Init();
-
   MX_CAN1_Init();
+
   /* USER CODE BEGIN 2 */
   HAL_CAN_Start(&hcan1);
   lsm6ds3tr_init_driver(&hi2c3);
   HAL_UART_Receive_IT(&huart2, rx_data, 1);
+
+  // Blocking calibration (~0.3 s). Keep the sensor stationary.
+  lsm6ds3tr_calibrate();
+
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -121,19 +130,19 @@ int main(void)
 
     /* USER CODE BEGIN 3 */
 
-	// ALWAYS read values
-
     if (cmd_ready)
     {
       cmd_ready = 0;
       process_command();
-
     }
 
-	lsm6ds3tr_read();          // 1. Filtered data
-	CAN_Send_IMU_Data();     // 2. Push to CAN Bus
+    // Non-blocking DMA read; result is processed in HAL_I2C_MemRxCpltCallback
+    // which also pushes to the circular buffer and updates imu_data.
+    lsm6ds3tr_init_dma_read();
 
-    // Add a small delay
+    // Transmit the latest accel values over CAN
+    CAN_Send_IMU_Data();
+
     HAL_Delay(20);
   }
   /* USER CODE END 3 */
@@ -184,6 +193,20 @@ void SystemClock_Config(void)
   {
     Error_Handler();
   }
+}
+
+/**
+  * @brief DMA Initialization Function
+  * @retval None
+  */
+static void MX_DMA_Init(void)
+{
+  /* DMA controller clock enable */
+  __HAL_RCC_DMA1_CLK_ENABLE();
+
+  /* DMA interrupt init — DMA1_Stream1 (I2C3 RX) */
+  HAL_NVIC_SetPriority(DMA1_Stream1_IRQn, 0, 0);
+  HAL_NVIC_EnableIRQ(DMA1_Stream1_IRQn);
 }
 
 /**
@@ -337,40 +360,46 @@ static void MX_GPIO_Init(void)
 
 /* USER CODE BEGIN 4 */
 
+/**
+ * @brief Encode and transmit the latest accel reading on CAN ID 0x123.
+ *
+ * Packs AX, AY, AZ as big-endian signed 16-bit integers scaled by 100
+ * (i.e. value_int16 = meters_per_sec_sq * 100).  Called every loop cycle;
+ * skips silently if the IMU is not connected or CAN mailboxes are full.
+ */
 void CAN_Send_IMU_Data(void)
 {
   LSM6DS3TR_Data_t *imu = lsm6ds3tr_get_data();
 
-  // Safety guard
   if (imu->state != SENSOR_STATE_CONNECTED) return;
 
   TxHeader.StdId = 0x123;
-  TxHeader.IDE = CAN_ID_STD;
-  TxHeader.RTR = CAN_RTR_DATA;
-  TxHeader.DLC = 6; // Changed to 6 bytes (2 bytes each for X, Y, Z)
+  TxHeader.IDE   = CAN_ID_STD;
+  TxHeader.RTR   = CAN_RTR_DATA;
+  TxHeader.DLC   = 6;
 
-  // data mapping
   int16_t ax = (int16_t)(imu->accel.filt_x * 100);
   int16_t ay = (int16_t)(imu->accel.filt_y * 100);
   int16_t az = (int16_t)(imu->accel.filt_z * 100);
 
-  // Pack X
   TxData[0] = (ax >> 8) & 0xFF;
-  TxData[1] = ax & 0xFF;
-
-  // Pack Y
+  TxData[1] =  ax       & 0xFF;
   TxData[2] = (ay >> 8) & 0xFF;
-  TxData[3] = ay & 0xFF;
-
-  // Pack Z
+  TxData[3] =  ay       & 0xFF;
   TxData[4] = (az >> 8) & 0xFF;
-  TxData[5] = az & 0xFF;
+  TxData[5] =  az       & 0xFF;
 
   if (HAL_CAN_GetTxMailboxesFreeLevel(&hcan1) > 0) {
-      HAL_CAN_AddTxMessage(&hcan1, &TxHeader, TxData, &TxMailbox);
+    HAL_CAN_AddTxMessage(&hcan1, &TxHeader, TxData, &TxMailbox);
   }
 }
 
+/**
+ * @brief UART RX interrupt callback — accumulates bytes into rx_buffer.
+ *
+ * One byte arrives per interrupt. A newline / carriage-return terminates the
+ * command and sets cmd_ready so process_command() runs next loop cycle.
+ */
 void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
 {
   UNUSED(huart);
@@ -381,7 +410,7 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
     {
       rx_buffer[rx_index] = '\0';
       cmd_ready = 1;
-      rx_index = 0;
+      rx_index  = 0;
     }
   }
   else if (rx_index < sizeof(rx_buffer) - 1)
@@ -392,31 +421,102 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
   HAL_UART_Receive_IT(&huart2, rx_data, 1);
 }
 
+/**
+ * @brief Process a complete UART command stored in rx_buffer.
+ *
+ * Commands:
+ *   READ       - Latest filtered accel + gyro (single reading, same as before)
+ *   READLATEST - Latest reading from the circular buffer
+ *   READALL    - All 100 stored readings, oldest first
+ *   STATUS     - IMU connection state
+ *   REGISTER   - I2C device address
+ *   CONFIG     - Gyro and accel control register values
+ *   POWER      - Power configuration register value
+ *
+ * ISR-safety for READLATEST / READALL:
+ *   The DMA completion callback (HAL_I2C_MemRxCpltCallback) writes to the
+ *   circular buffer from ISR context.  To prevent a torn read we briefly
+ *   disable the DMA interrupt while copying data out of the buffer, then
+ *   re-enable it before transmitting — which can take time.
+ */
 static void process_command(void)
 {
   LSM6DS3TR_Data_t *imu = lsm6ds3tr_get_data();
-  uint16_t len;
+  uint16_t len = 0;
 
   if (strcmp((char*)rx_buffer, "READ") == 0)
   {
-
     len = sprintf((char*)tx_buffer,
         "AX:%.2f AY:%.2f AZ:%.2f GX:%.2f GY:%.2f GZ:%.2f\r\n",
         imu->accel.filt_x, imu->accel.filt_y, imu->accel.filt_z,
-        imu->gyro.filt_x, imu->gyro.filt_y, imu->gyro.filt_z);
+        imu->gyro.filt_x,  imu->gyro.filt_y,  imu->gyro.filt_z);
     HAL_UART_Transmit(&huart2, tx_buffer, len, 100);
+  }
+  else if (strcmp((char*)rx_buffer, "READLATEST") == 0)
+  {
+    IMUReading reading;
+
+    // Disable DMA interrupt while reading from the shared buffer
+    HAL_NVIC_DisableIRQ(DMA1_Stream1_IRQn);
+    int ok = imu_buffer_get_latest(&reading);
+    HAL_NVIC_EnableIRQ(DMA1_Stream1_IRQn);
+
+    if (ok)
+    {
+      len = sprintf((char*)tx_buffer,
+          "LATEST AX:%.2f AY:%.2f AZ:%.2f GX:%.2f GY:%.2f GZ:%.2f\r\n",
+          reading.ax, reading.ay, reading.az,
+          reading.gx, reading.gy, reading.gz);
+    }
+    else
+    {
+      len = sprintf((char*)tx_buffer, "LATEST:EMPTY\r\n");
+    }
+    HAL_UART_Transmit(&huart2, tx_buffer, len, 200);
+  }
+  else if (strcmp((char*)rx_buffer, "READALL") == 0)
+  {
+    // Stack-allocate the snapshot to keep it off the heap.
+    // 100 * 24 bytes = 2400 bytes — requires _Min_Stack_Size >= 0x1000.
+    IMUReading snapshot[IMU_BUFFER_CAPACITY];
+    size_t count;
+
+    // Disable DMA interrupt while copying the entire buffer
+    HAL_NVIC_DisableIRQ(DMA1_Stream1_IRQn);
+    count = imu_buffer_get_all(snapshot);
+    HAL_NVIC_EnableIRQ(DMA1_Stream1_IRQn);
+
+    if (count == 0)
+    {
+      len = sprintf((char*)tx_buffer, "ALL:EMPTY\r\n");
+      HAL_UART_Transmit(&huart2, tx_buffer, len, 100);
+    }
+    else
+    {
+      // Header
+      len = sprintf((char*)tx_buffer, "ALL:COUNT=%u\r\n", (unsigned)count);
+      HAL_UART_Transmit(&huart2, tx_buffer, len, 100);
+
+      // Stream readings one at a time to avoid overflowing tx_buffer
+      for (size_t i = 0; i < count; ++i)
+      {
+        len = sprintf((char*)tx_buffer,
+            "[%u] AX:%.2f AY:%.2f AZ:%.2f GX:%.2f GY:%.2f GZ:%.2f\r\n",
+            (unsigned)i,
+            snapshot[i].ax, snapshot[i].ay, snapshot[i].az,
+            snapshot[i].gx, snapshot[i].gy, snapshot[i].gz);
+        // Timeout scaled to line length: 200 ms per line is generous at 115200
+        HAL_UART_Transmit(&huart2, tx_buffer, len, 200);
+      }
+    }
   }
   else if (strcmp((char*)rx_buffer, "STATUS") == 0)
   {
     lsm6ds3tr_check_connection();
     if (imu->state == SENSOR_STATE_CONNECTED)
-    {
       len = sprintf((char*)tx_buffer, "STATUS:CONNECTED\r\n");
-    }
     else
-    {
       len = sprintf((char*)tx_buffer, "STATUS:LOST\r\n");
-    }
     HAL_UART_Transmit(&huart2, tx_buffer, len, 100);
   }
   else if (strcmp((char*)rx_buffer, "REGISTER") == 0)
