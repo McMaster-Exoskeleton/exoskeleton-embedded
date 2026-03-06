@@ -71,6 +71,7 @@ static void MX_I2C3_Init(void);
 static void MX_CAN1_Init(void);
 /* USER CODE BEGIN PFP */
 static void process_command(void);
+void CAN_Send_IMU_Data(void);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
