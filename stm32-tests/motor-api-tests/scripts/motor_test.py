@@ -13,7 +13,7 @@ Usage:
 Requirements:
     pip install pyserial
 
-Commands:
+Read Commands:
     PING       - Test connection (expects PONG)
     READ_ALL   - Read all motor feedback values
     READ_POS   - Read motor position (degrees)
@@ -21,6 +21,18 @@ Commands:
     READ_CUR   - Read motor current (amps)
     READ_TEMP  - Read driver board temperature (C)
     READ_ERR   - Read motor error code with description
+
+Motor Control Commands (require confirmation):
+    ESTOP                          - Emergency stop (immediate, no confirmation)
+    SET_DUTY <duty>                - Set duty cycle (-0.15 to 0.15)
+    SET_CURRENT <amps>             - Set current/torque (-5.0 to 5.0 A)
+    SET_BRAKE <amps>               - Set brake current (0 to 5.0 A)
+    SET_RPM <rpm>                  - Set velocity (-5000 to 5000 ERPM)
+    SET_POS <degrees>              - Set position (-360 to 360 deg)
+    SET_ORIGIN <0|1>               - Set zero position (0=temp, 1=permanent)
+    SET_POS_SPD <deg> <spd> <acc>  - Position with velocity/accel limits
+    SET_MIT <p> <v> <kp> <kd> <t>  - MIT force control
+
     quit       - Exit the script
 """
 
@@ -38,6 +50,12 @@ except ImportError:
 BAUD_RATE = 115200
 TIMEOUT = 1.0  # Serial read timeout in seconds
 
+# Commands that move the motor and require confirmation
+MOTOR_COMMANDS = {
+    "SET_DUTY", "SET_CURRENT", "SET_BRAKE", "SET_RPM",
+    "SET_POS", "SET_ORIGIN", "SET_POS_SPD", "SET_MIT",
+}
+
 
 def find_stlink_port():
     """Try to auto-detect an ST-Link virtual COM port."""
@@ -53,10 +71,19 @@ def find_stlink_port():
     return None
 
 
+def is_motor_command(cmd):
+    """Check if a command is a motor control command that needs confirmation."""
+    cmd_upper = cmd.strip().upper()
+    for prefix in MOTOR_COMMANDS:
+        if cmd_upper.startswith(prefix):
+            return True
+    return False
+
+
 def reader_thread(ser, stop_event):
     """
     Background thread that continuously reads lines from the serial port.
-    Displays motor error notifications (lines starting with '!') prominently.
+    Displays motor error notifications and watchdog alerts prominently.
     """
     while not stop_event.is_set():
         try:
@@ -102,7 +129,7 @@ def main():
 
     print(f"Connected to {port} at {BAUD_RATE} baud")
     print()
-    print("Available commands:")
+    print("=== READ COMMANDS ===")
     print("  PING       - Test connection")
     print("  READ_ALL   - Read all motor values")
     print("  READ_POS   - Read position (degrees)")
@@ -110,7 +137,19 @@ def main():
     print("  READ_CUR   - Read current (amps)")
     print("  READ_TEMP  - Read temperature (C)")
     print("  READ_ERR   - Read error code")
-    print("  quit       - Exit")
+    print()
+    print("=== MOTOR CONTROL (requires confirmation) ===")
+    print("  ESTOP                          - EMERGENCY STOP (immediate)")
+    print("  SET_DUTY <duty>                - Duty cycle (-0.15 to 0.15)")
+    print("  SET_CURRENT <amps>             - Current (-5 to 5 A)")
+    print("  SET_BRAKE <amps>               - Brake current (0 to 5 A)")
+    print("  SET_RPM <rpm>                  - Velocity (-5000 to 5000 ERPM)")
+    print("  SET_POS <degrees>              - Position (-360 to 360 deg)")
+    print("  SET_ORIGIN <0|1>               - Set zero (0=temp, 1=perm)")
+    print("  SET_POS_SPD <deg> <spd> <acc>  - Position + velocity + accel")
+    print("  SET_MIT <p> <v> <kp> <kd> <t>  - MIT force control")
+    print()
+    print("  quit / Ctrl+C - Exit")
     print()
 
     # Start the reader thread
@@ -127,9 +166,36 @@ def main():
                 break
 
             if cmd.lower() == "quit":
+                # Send ESTOP before quitting
+                try:
+                    ser.write(b"ESTOP\n")
+                    time.sleep(0.1)
+                except serial.SerialException:
+                    pass
                 break
             if not cmd:
                 continue
+
+            # ESTOP is always sent immediately without confirmation
+            if cmd.strip().upper() == "ESTOP":
+                try:
+                    ser.write(b"ESTOP\n")
+                except serial.SerialException:
+                    print("[Serial write failed]")
+                    break
+                time.sleep(0.05)
+                continue
+
+            # Motor control commands require confirmation
+            if is_motor_command(cmd):
+                print(f"  >> Will send: {cmd}")
+                try:
+                    confirm = input("  >> Confirm? (y/n): ").strip().lower()
+                except EOFError:
+                    break
+                if confirm != "y":
+                    print("  >> Cancelled.")
+                    continue
 
             # Send command to the STM32
             try:
@@ -142,7 +208,12 @@ def main():
             time.sleep(0.05)
 
     except KeyboardInterrupt:
-        print("\nInterrupted")
+        print("\nInterrupted - sending ESTOP...")
+        try:
+            ser.write(b"ESTOP\n")
+            time.sleep(0.1)
+        except serial.SerialException:
+            pass
 
     # Cleanup
     stop_event.set()
