@@ -22,6 +22,7 @@ void CanApp_Init(void) {
 	const uint16_t accept_ids[] = {
 	    canproto::CmdId(ThisNode),
 	    canproto::HbId(ThisNode),
+		canproto::ReqDumpId(ThisNode)
 	};
 
 
