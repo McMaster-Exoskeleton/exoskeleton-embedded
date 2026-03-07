@@ -383,12 +383,18 @@ void CAN_Send_IMU_Data(void)
   int16_t ay = (int16_t)(imu->accel.filt_y * 100);
   int16_t az = (int16_t)(imu->accel.filt_z * 100);
 
-  TxData[0] = (ax >> 8) & 0xFF;
-  TxData[1] =  ax       & 0xFF;
-  TxData[2] = (ay >> 8) & 0xFF;
-  TxData[3] =  ay       & 0xFF;
-  TxData[4] = (az >> 8) & 0xFF;
-  TxData[5] =  az       & 0xFF;
+  // Pack X
+  TxData[0] = ax & 0xFF;
+  TxData[1] = (ax >> 8) & 0xFF;
+
+  // Pack Y
+  TxData[2] = ay & 0xFF;
+  TxData[3] = (ay >> 8) & 0xFF;
+
+  // Pack Z
+  TxData[4] = az & 0xFF;
+  TxData[5] = (az >> 8) & 0xFF;
+
 
   if (HAL_CAN_GetTxMailboxesFreeLevel(&hcan1) > 0) {
     HAL_CAN_AddTxMessage(&hcan1, &TxHeader, TxData, &TxMailbox);
