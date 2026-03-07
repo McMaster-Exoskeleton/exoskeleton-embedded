@@ -55,6 +55,7 @@
 /* USER CODE END 0 */
 
 /* External variables --------------------------------------------------------*/
+extern CAN_HandleTypeDef  hcan1;
 extern DMA_HandleTypeDef  hdma_i2c3_rx;
 extern I2C_HandleTypeDef  hi2c3;
 extern UART_HandleTypeDef huart2;
@@ -240,6 +241,14 @@ void I2C3_EV_IRQHandler(void)
   /* USER CODE BEGIN I2C3_EV_IRQn 1 */
 
   /* USER CODE END I2C3_EV_IRQn 1 */
+}
+
+/**
+  * @brief This function handles CAN1 RX0 interrupt.
+  */
+void CAN1_RX0_IRQHandler(void)
+{
+  HAL_CAN_IRQHandler(&hcan1);
 }
 
 /* USER CODE BEGIN 1 */

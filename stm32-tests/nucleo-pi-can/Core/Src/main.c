@@ -25,6 +25,8 @@
 #include <stdio.h>
 #include <string.h>
 #include "imu_buffer.h"
+#include "can/can_bus.h"
+#include "can/ak70_9.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -34,7 +36,7 @@
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
-
+#define MOTOR_CAN_ID  104   /* CAN driver ID for the AK70-9 motor */
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -49,17 +51,18 @@ I2C_HandleTypeDef  hi2c3;
 UART_HandleTypeDef huart2;
 
 /* USER CODE BEGIN PV */
-CAN_TxHeaderTypeDef TxHeader;
-uint8_t  TxData[8];
-uint32_t TxMailbox;
 
 uint8_t          rx_data[1];
 uint8_t          rx_buffer[100];
 uint8_t          rx_index = 0;
-/* READALL streams one line at a time, so tx_buffer only needs to hold one
-   formatted reading (~60 chars). 256 bytes gives comfortable margin. */
 uint8_t          tx_buffer[256];
 volatile uint8_t cmd_ready = 0;
+
+/* Latest motor feedback — updated each loop from CAN RX ring buffer.
+ * g_motor_position_deg is read by the I2C DMA callback (ISR) when it
+ * pushes a new entry to the circular buffer, so it must be volatile. */
+MotorStatus      g_motor_status;
+volatile float   g_motor_position_deg = 0.0f;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -71,6 +74,7 @@ static void MX_I2C3_Init(void);
 static void MX_CAN1_Init(void);
 /* USER CODE BEGIN PFP */
 static void process_command(void);
+static void poll_motor_can(void);
 void CAN_Send_IMU_Data(void);
 /* USER CODE END PFP */
 
@@ -114,7 +118,11 @@ int main(void)
   MX_CAN1_Init();
 
   /* USER CODE BEGIN 2 */
-  HAL_CAN_Start(&hcan1);
+
+  /* Initialize the CAN bus driver (accept-all filter, RX interrupt, ring buffer).
+   * This replaces the manual HAL_CAN_Start + filter setup. */
+  can_bus_init(&hcan1);
+
   lsm6ds3tr_init_driver(&hi2c3);
   HAL_UART_Receive_IT(&huart2, rx_data, 1);
 
@@ -141,7 +149,14 @@ int main(void)
     // which also pushes to the circular buffer and updates imu_data.
     lsm6ds3tr_init_dma_read();
 
-    // Transmit the latest accel values over CAN
+    // Send a zero-current command to the motor to trigger a feedback response.
+    // The motor replies with position, speed, current, temperature, error.
+    comm_can_set_current(MOTOR_CAN_ID, 0.0f);
+
+    // Drain CAN RX ring buffer and parse any motor feedback messages.
+    poll_motor_can();
+
+    // Broadcast latest accel data on CAN standard ID 0x123.
     CAN_Send_IMU_Data();
 
     HAL_Delay(20);
@@ -226,11 +241,11 @@ static void MX_CAN1_Init(void)
 
   /* USER CODE END CAN1_Init 1 */
   hcan1.Instance = CAN1;
-  hcan1.Init.Prescaler = 6;
+  hcan1.Init.Prescaler = 3;                 /* 42 MHz / 3 / (1+10+3) = 1 Mbps */
   hcan1.Init.Mode = CAN_MODE_NORMAL;
   hcan1.Init.SyncJumpWidth = CAN_SJW_1TQ;
-  hcan1.Init.TimeSeg1 = CAN_BS1_11TQ;
-  hcan1.Init.TimeSeg2 = CAN_BS2_2TQ;
+  hcan1.Init.TimeSeg1 = CAN_BS1_10TQ;       /* sample point at 78.6% */
+  hcan1.Init.TimeSeg2 = CAN_BS2_3TQ;
   hcan1.Init.TimeTriggeredMode = DISABLE;
   hcan1.Init.AutoBusOff = DISABLE;
   hcan1.Init.AutoWakeUp = DISABLE;
@@ -362,11 +377,32 @@ static void MX_GPIO_Init(void)
 /* USER CODE BEGIN 4 */
 
 /**
+ * @brief Drain CAN RX ring buffer and parse motor feedback messages.
+ *
+ * The AK70-9 motor responds with an extended-ID CAN frame where
+ * bits [7:0] = motor driver ID. We check for our motor's ID and
+ * parse the 8-byte feedback payload.
+ */
+static void poll_motor_can(void)
+{
+  CanFrame rx_frame;
+  while (can_bus_recv(&rx_frame))
+  {
+    /* Motor feedback arrives as an extended CAN frame.
+     * The driver ID is in bits [7:0] of the extended identifier. */
+    if (rx_frame.is_extended && (rx_frame.id & 0xFF) == MOTOR_CAN_ID)
+    {
+      motor_receive(&g_motor_status, rx_frame.data);
+      g_motor_position_deg = g_motor_status.position;
+    }
+  }
+}
+
+/**
  * @brief Encode and transmit the latest accel reading on CAN ID 0x123.
  *
- * Packs AX, AY, AZ as big-endian signed 16-bit integers scaled by 100
- * (i.e. value_int16 = meters_per_sec_sq * 100).  Called every loop cycle;
- * skips silently if the IMU is not connected or CAN mailboxes are full.
+ * Packs AX, AY, AZ as little-endian signed 16-bit integers scaled by 100.
+ * Skips silently if the IMU is not connected or CAN mailboxes are full.
  */
 void CAN_Send_IMU_Data(void)
 {
@@ -374,38 +410,23 @@ void CAN_Send_IMU_Data(void)
 
   if (imu->state != SENSOR_STATE_CONNECTED) return;
 
-  TxHeader.StdId = 0x123;
-  TxHeader.IDE   = CAN_ID_STD;
-  TxHeader.RTR   = CAN_RTR_DATA;
-  TxHeader.DLC   = 6;
-
   int16_t ax = (int16_t)(imu->accel.filt_x * 100);
   int16_t ay = (int16_t)(imu->accel.filt_y * 100);
   int16_t az = (int16_t)(imu->accel.filt_z * 100);
 
-  // Pack X
-  TxData[0] = ax & 0xFF;
-  TxData[1] = (ax >> 8) & 0xFF;
+  uint8_t data[6];
+  data[0] = ax & 0xFF;
+  data[1] = (ax >> 8) & 0xFF;
+  data[2] = ay & 0xFF;
+  data[3] = (ay >> 8) & 0xFF;
+  data[4] = az & 0xFF;
+  data[5] = (az >> 8) & 0xFF;
 
-  // Pack Y
-  TxData[2] = ay & 0xFF;
-  TxData[3] = (ay >> 8) & 0xFF;
-
-  // Pack Z
-  TxData[4] = az & 0xFF;
-  TxData[5] = (az >> 8) & 0xFF;
-
-
-  if (HAL_CAN_GetTxMailboxesFreeLevel(&hcan1) > 0) {
-    HAL_CAN_AddTxMessage(&hcan1, &TxHeader, TxData, &TxMailbox);
-  }
+  can_bus_send_std(0x123, data, 6);
 }
 
 /**
  * @brief UART RX interrupt callback — accumulates bytes into rx_buffer.
- *
- * One byte arrives per interrupt. A newline / carriage-return terminates the
- * command and sets cmd_ready so process_command() runs next loop cycle.
  */
 void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
 {
@@ -432,19 +453,13 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
  * @brief Process a complete UART command stored in rx_buffer.
  *
  * Commands:
- *   READ       - Latest filtered accel + gyro (single reading, same as before)
+ *   READ       - Latest filtered accel + gyro + motor position
  *   READLATEST - Latest reading from the circular buffer
- *   READALL    - All 100 stored readings, oldest first
- *   STATUS     - IMU connection state
+ *   READALL    - All stored readings, oldest first
+ *   STATUS     - IMU connection state + motor error
  *   REGISTER   - I2C device address
  *   CONFIG     - Gyro and accel control register values
  *   POWER      - Power configuration register value
- *
- * ISR-safety for READLATEST / READALL:
- *   The DMA completion callback (HAL_I2C_MemRxCpltCallback) writes to the
- *   circular buffer from ISR context.  To prevent a torn read we briefly
- *   disable the DMA interrupt while copying data out of the buffer, then
- *   re-enable it before transmitting — which can take time.
  */
 static void process_command(void)
 {
@@ -454,16 +469,17 @@ static void process_command(void)
   if (strcmp((char*)rx_buffer, "READ") == 0)
   {
     len = sprintf((char*)tx_buffer,
-        "AX:%.2f AY:%.2f AZ:%.2f GX:%.2f GY:%.2f GZ:%.2f\r\n",
+        "T:%lu MP:%.2f AX:%.2f AY:%.2f AZ:%.2f GX:%.2f GY:%.2f GZ:%.2f\r\n",
+        (unsigned long)HAL_GetTick(),
+        (double)g_motor_position_deg,
         imu->accel.filt_x, imu->accel.filt_y, imu->accel.filt_z,
         imu->gyro.filt_x,  imu->gyro.filt_y,  imu->gyro.filt_z);
     HAL_UART_Transmit(&huart2, tx_buffer, len, 100);
   }
   else if (strcmp((char*)rx_buffer, "READLATEST") == 0)
   {
-    IMUReading reading;
+    SensorReading reading;
 
-    // Disable DMA interrupt while reading from the shared buffer
     HAL_NVIC_DisableIRQ(DMA1_Stream1_IRQn);
     int ok = imu_buffer_get_latest(&reading);
     HAL_NVIC_EnableIRQ(DMA1_Stream1_IRQn);
@@ -471,7 +487,9 @@ static void process_command(void)
     if (ok)
     {
       len = sprintf((char*)tx_buffer,
-          "LATEST AX:%.2f AY:%.2f AZ:%.2f GX:%.2f GY:%.2f GZ:%.2f\r\n",
+          "LATEST T:%lu MP:%.2f AX:%.2f AY:%.2f AZ:%.2f GX:%.2f GY:%.2f GZ:%.2f\r\n",
+          (unsigned long)reading.timestamp_ms,
+          reading.motor_position_deg,
           reading.ax, reading.ay, reading.az,
           reading.gx, reading.gy, reading.gz);
     }
@@ -483,12 +501,9 @@ static void process_command(void)
   }
   else if (strcmp((char*)rx_buffer, "READALL") == 0)
   {
-    // Stack-allocate the snapshot to keep it off the heap.
-    // 100 * 24 bytes = 2400 bytes — requires _Min_Stack_Size >= 0x1000.
-    IMUReading snapshot[IMU_BUFFER_CAPACITY];
+    SensorReading snapshot[IMU_BUFFER_CAPACITY];
     size_t count;
 
-    // Disable DMA interrupt while copying the entire buffer
     HAL_NVIC_DisableIRQ(DMA1_Stream1_IRQn);
     count = imu_buffer_get_all(snapshot);
     HAL_NVIC_EnableIRQ(DMA1_Stream1_IRQn);
@@ -500,19 +515,18 @@ static void process_command(void)
     }
     else
     {
-      // Header
       len = sprintf((char*)tx_buffer, "ALL:COUNT=%u\r\n", (unsigned)count);
       HAL_UART_Transmit(&huart2, tx_buffer, len, 100);
 
-      // Stream readings one at a time to avoid overflowing tx_buffer
       for (size_t i = 0; i < count; ++i)
       {
         len = sprintf((char*)tx_buffer,
-            "[%u] AX:%.2f AY:%.2f AZ:%.2f GX:%.2f GY:%.2f GZ:%.2f\r\n",
+            "[%u] T:%lu MP:%.2f AX:%.2f AY:%.2f AZ:%.2f GX:%.2f GY:%.2f GZ:%.2f\r\n",
             (unsigned)i,
+            (unsigned long)snapshot[i].timestamp_ms,
+            snapshot[i].motor_position_deg,
             snapshot[i].ax, snapshot[i].ay, snapshot[i].az,
             snapshot[i].gx, snapshot[i].gy, snapshot[i].gz);
-        // Timeout scaled to line length: 200 ms per line is generous at 115200
         HAL_UART_Transmit(&huart2, tx_buffer, len, 200);
       }
     }
@@ -520,10 +534,11 @@ static void process_command(void)
   else if (strcmp((char*)rx_buffer, "STATUS") == 0)
   {
     lsm6ds3tr_check_connection();
-    if (imu->state == SENSOR_STATE_CONNECTED)
-      len = sprintf((char*)tx_buffer, "STATUS:CONNECTED\r\n");
-    else
-      len = sprintf((char*)tx_buffer, "STATUS:LOST\r\n");
+    const char *imu_state = (imu->state == SENSOR_STATE_CONNECTED) ? "CONNECTED" : "LOST";
+    const char *motor_err = motor_error_to_string(g_motor_status.error);
+    len = sprintf((char*)tx_buffer,
+        "IMU:%s MOTOR_POS:%.2f MOTOR_ERR:%s\r\n",
+        imu_state, g_motor_status.position, motor_err);
     HAL_UART_Transmit(&huart2, tx_buffer, len, 100);
   }
   else if (strcmp((char*)rx_buffer, "REGISTER") == 0)

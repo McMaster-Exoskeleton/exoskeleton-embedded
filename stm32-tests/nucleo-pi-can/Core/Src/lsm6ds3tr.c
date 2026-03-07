@@ -282,8 +282,10 @@ void HAL_I2C_MemRxCpltCallback(I2C_HandleTypeDef *hi2c)
 	imu_data.accel.x = x_accel; imu_data.accel.y = y_accel; imu_data.accel.z = z_accel;
 	imu_data.gyro.x  = x_gyro;  imu_data.gyro.y  = y_gyro;  imu_data.gyro.z  = z_gyro;
 
-	// Push to the circular buffer — READLATEST and READALL serve from here
-	imu_buffer_push(ax, ay, az, gx, gy, gz);
+	// Push to the circular buffer with timestamp and latest motor position.
+	// g_motor_position_deg is updated in the main loop from CAN feedback.
+	extern volatile float g_motor_position_deg;
+	imu_buffer_push(HAL_GetTick(), g_motor_position_deg, ax, ay, az, gx, gy, gz);
 }
 
 /* --------------------------------------------------------------------------
