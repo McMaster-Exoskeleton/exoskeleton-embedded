@@ -38,6 +38,10 @@ int can_bus_init(CAN_HandleTypeDef* hcan) {
     HAL_NVIC_SetPriority(CAN1_RX0_IRQn, 1, 0);
     HAL_NVIC_EnableIRQ(CAN1_RX0_IRQn);
 
+    /* Enable NVIC for CAN1 SCE (error & status change) */
+    HAL_NVIC_SetPriority(CAN1_SCE_IRQn, 1, 0);
+    HAL_NVIC_EnableIRQ(CAN1_SCE_IRQn);
+
     /* Activate RX and error notifications */
     uint32_t notif = CAN_IT_RX_FIFO0_MSG_PENDING |
                      CAN_IT_ERROR |

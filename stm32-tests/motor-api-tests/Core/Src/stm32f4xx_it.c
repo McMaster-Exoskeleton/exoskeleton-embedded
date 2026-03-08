@@ -221,4 +221,15 @@ void CAN1_RX0_IRQHandler(void)
 {
   HAL_CAN_IRQHandler(&hcan1);
 }
+
+/**
+  * @brief This function handles CAN1 SCE interrupt (error & status change).
+  *        Required because can_bus_init() enables CAN_IT_ERROR/BUSOFF/LAST_ERROR_CODE
+  *        which fire through this vector. Without this handler, a CAN error
+  *        hits Default_Handler (infinite loop) and freezes the board.
+  */
+void CAN1_SCE_IRQHandler(void)
+{
+  HAL_CAN_IRQHandler(&hcan1);
+}
 /* USER CODE END 1 */

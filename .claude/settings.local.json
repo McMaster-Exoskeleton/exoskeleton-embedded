@@ -1,0 +1,7 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(ls -la \"C:\\\\Users\\\\brixs\\\\OneDrive - McMaster University\\\\Desktop\\\\McMaster\\\\exoskelton\\\\embedded_repo\\\\exoskeleton-embedded\\\\stm32-tests\\\\motor-api-tests\\\\Core\\\\Inc\\\\can\"\" && echo \"---\" && ls -la \"C:UsersbrixsOneDrive - McMaster UniversityDesktopMcMasterexoskeltonembedded_repoexoskeleton-embeddedstm32-testsmotor-api-testsCoreSrccan\"\")"
+    ]
+  }
+}

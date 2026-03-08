@@ -29,6 +29,27 @@
 
 #include <stdint.h>
 
+/* ======================== Motor Configuration ============================= */
+
+#define MOTOR_CAN_ID               104       /* CAN ID of the AK70-9 motor */
+
+/* ======================== Test-Safe Limits ================================ */
+/*
+ * Conservative ceilings for bench testing. UART commands clamp to these
+ * values before calling motor API functions. Adjust as needed, but keep
+ * well below motor maximums to prevent damage during testing.
+ */
+#define TEST_DUTY_MAX              (0.9f)   /* +/-15% duty cycle */
+#define TEST_CURRENT_MAX           (5.0f)    /* +/-5 A */
+#define TEST_BRAKE_CURRENT_MAX     (5.0f)    /* 5 A brake */
+#define TEST_RPM_MAX               (5000.0f) /* +/-5000 ERPM */
+#define TEST_POS_DEG_MAX           (360.0f)  /* +/-360 degrees (1 rev) */
+#define TEST_MIT_P_MAX             (3.14f)   /* +/-pi rad (~half rev) */
+#define TEST_MIT_V_MAX             (5.0f)    /* +/-5 rad/s */
+#define TEST_MIT_T_MAX             (5.0f)    /* +/-5 Nm */
+#define TEST_MIT_KP_MAX            (50.0f)   /* position gain ceiling */
+#define TEST_MIT_KD_MAX            (2.5f)    /* damping gain ceiling */
+
 /* ======================== Motor Parameter Limits ========================= */
 
 /* Servo mode limits */
