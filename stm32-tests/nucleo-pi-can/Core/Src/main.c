@@ -24,6 +24,7 @@
 /* USER CODE BEGIN Includes */
 #include <stdio.h>
 #include <string.h>
+#include <stdlib.h>
 #include "imu_buffer.h"
 #include "can/can_bus.h"
 #include "can/ak70_9.h"
@@ -63,6 +64,12 @@ volatile uint8_t cmd_ready = 0;
  * pushes a new entry to the circular buffer, so it must be volatile. */
 MotorStatus      g_motor_status;
 volatile float   g_motor_position_deg = 0.0f;
+static float     g_motor_target_current = 0.0f;  /* set via UART SET_CUR command */
+
+/* VESC command refresh — re-send active command every 50ms to prevent
+ * the VESC firmware's internal timeout from stopping the motor. */
+#define CMD_REFRESH_MS 50
+static uint32_t  last_refresh_tick = 0;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -149,9 +156,15 @@ int main(void)
     // which also pushes to the circular buffer and updates imu_data.
     lsm6ds3tr_init_dma_read();
 
-    // Send a zero-current command to the motor to trigger a feedback response.
-    // The motor replies with position, speed, current, temperature, error.
-    comm_can_set_current(MOTOR_CAN_ID, 0.0f);
+    // Re-send active motor command every CMD_REFRESH_MS to prevent
+    // VESC internal timeout from stopping the motor.
+    {
+      uint32_t now = HAL_GetTick();
+      if ((now - last_refresh_tick) >= CMD_REFRESH_MS) {
+        last_refresh_tick = now;
+        comm_can_set_current(MOTOR_CAN_ID, g_motor_target_current);
+      }
+    }
 
     // Drain CAN RX ring buffer and parse any motor feedback messages.
     poll_motor_can();
@@ -247,9 +260,9 @@ static void MX_CAN1_Init(void)
   hcan1.Init.TimeSeg1 = CAN_BS1_10TQ;       /* sample point at 78.6% */
   hcan1.Init.TimeSeg2 = CAN_BS2_3TQ;
   hcan1.Init.TimeTriggeredMode = DISABLE;
-  hcan1.Init.AutoBusOff = DISABLE;
+  hcan1.Init.AutoBusOff = ENABLE;
   hcan1.Init.AutoWakeUp = DISABLE;
-  hcan1.Init.AutoRetransmission = DISABLE;
+  hcan1.Init.AutoRetransmission = ENABLE;
   hcan1.Init.ReceiveFifoLocked = DISABLE;
   hcan1.Init.TransmitFifoPriority = DISABLE;
   if (HAL_CAN_Init(&hcan1) != HAL_OK)
@@ -556,6 +569,26 @@ static void process_command(void)
   else if (strcmp((char*)rx_buffer, "POWER") == 0)
   {
     len = sprintf((char*)tx_buffer, "POWER_CFG:0x%02X\r\n", imu->power_config);
+    HAL_UART_Transmit(&huart2, tx_buffer, len, 100);
+  }
+  else if (strcmp((char*)rx_buffer, "SET_ORIGIN") == 0)
+  {
+    comm_can_set_origin(MOTOR_CAN_ID, 1);
+    g_motor_position_deg = 0.0f;
+    len = sprintf((char*)tx_buffer, "OK:SET_ORIGIN\r\n");
+    HAL_UART_Transmit(&huart2, tx_buffer, len, 100);
+  }
+  else if (strncmp((char*)rx_buffer, "SET_CUR:", 8) == 0)
+  {
+    float requested = (float)atof((char*)rx_buffer + 8);
+    /* Clamp to safe range: -5.0 to +5.0 A */
+    if (requested > 5.0f)  requested = 5.0f;
+    if (requested < -5.0f) requested = -5.0f;
+    g_motor_target_current = requested;
+    /* Send immediately and reset refresh tick */
+    comm_can_set_current(MOTOR_CAN_ID, g_motor_target_current);
+    last_refresh_tick = HAL_GetTick();
+    len = sprintf((char*)tx_buffer, "OK:CUR=%.2f\r\n", (double)g_motor_target_current);
     HAL_UART_Transmit(&huart2, tx_buffer, len, 100);
   }
   else
