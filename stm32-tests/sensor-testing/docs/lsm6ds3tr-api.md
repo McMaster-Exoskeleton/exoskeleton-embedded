@@ -70,6 +70,17 @@ typedef struct {
 
 ## API Functions
 
+- [lsm6ds3tr_init_driver()](#lsm6ds3tr_init_driver)
+- [lsm6ds3tr_check_connection()](#lsm6ds3tr_check_connection)
+- [lsm6ds3tr_configure()](#lsm6ds3tr_configure)
+- [lsm6ds3tr_calibrate](#lsm6ds3tr_calibrate)
+- [lsm6ds3tr_read](#lsm6ds3tr_read)
+- [lsm6ds3tr_init_dma_read](#lsm6ds3tr_init_dma_read)
+- [HAL_I2C_MemRxCpltCallback](#hal_i2c_memrxcpltcallback)
+- [lsm6ds3tr_get_data](#lsm6ds3tr_get_data)
+
+---
+
 ### `lsm6ds3tr_init_driver`
 
 ```c
@@ -91,7 +102,7 @@ lsm6ds3tr_init_driver(&hi2c3);
 uint8_t lsm6ds3tr_check_connection(void);
 ```
 
-Reads the `WHO_AM_I` register (`0x0F`) and verifies the response is `0x6A`. Updates the internal sensor state.
+Reads the `WHO_AM_I` register (`0x0F`) and verifies if the I2C bus is busy with a DMA transfer. If the bus is free, the response is `0x6A`. Updates the internal sensor state.
 
 **Returns:** `1` if connected, `0` if not.
 
@@ -128,50 +139,42 @@ Performs a 100-sample offset calculation to establish a baseline for the gyrosco
 uint8_t lsm6ds3tr_read(void);
 ```
 
-Reads accelerometer and gyroscope data from the sensor. Standard blocking read fallback function.
+Standard blocking read fallback function.
+1. Checks connection state; reconfigures if lost
+2. Fetches all 12 bytes via standard I2C read
+3. Applies conversions and offsets
+4. Updates the struct
 
 ---
 
-### `HAL_I2C_MemRxCpltCallback` (DMA Processing)
+### `lsm6ds3tr_init_dma_read`
 
 ```c
-uint8_t lsm6ds3tr_configure(void);
+uint8_t lsm6ds3tr_init_dma_read(void);
 ```
 
-Primary data acquistion pipeline handling data processing asynchronously.
-- Initiates a single 12-byte burst read starting at the `OUTX_L_G` register (`0x22`), capturing all gryoscope and accelerometer data in one read
-- DMA transfer completes, callback fires
-- Applies unit conversion and offsets
-- Updates the internal `lsm6ds3tr_data_t` structure
+DMA pipeline trigger. This function when called fetches the next batch of IMU data.
+1. Checks connection state; reconfigures if lost
+2. Initiates a non-blocking 12-byte burst read starting at `OUTX_L_G` register (`0x22`)
+3. Returns read without any processing
+
+**Returns:** `1` if DMA request was successful, `0` if the request failed or the sensor was lost
 
 ---
 
-### `HAL_I2C_MemRxCpltCallback` (DMA Processing)
+### `HAL_I2C_MemRxCpltCallback`
 
 ```c
-uint8_t lsm6ds3tr_configure(void);
+void HAL_I2C_MemRxCpltCallback(I2C_HandleTypeDef *hi2c);
 ```
 
-Primary data acquistion pipeline handling data processing asynchronously.
-- Initiates a single 12-byte burst read starting at the `OUTX_L_G` register (`0x22`), capturing all gryoscope and accelerometer data in one read
-- DMA transfer completes, callback fires
-- Applies unit conversion and offsets
-- Updates the internal `lsm6ds3tr_data_t` structure
-
-
----
-
-**Behavior:**
-1. If the sensor state is `LOST`, attempts to reconnect and reconfigure automatically. (?)
-2. Initiates a single 12-byte burst read starting at the `OUTX_L_G` register (`0x22`), capturing all gryoscope and accelerometer data in one read
-3. On the **first successful call**, runs a 100-sample calibration routine (takes ~300 ms). The sensor must be **stationary** during this time.
-4. Applies unit conversion:
+Primary data acquistion pipeline handling data processing asynchronously. This is the hardware interrupt callback, which is automatically called by the HAL once `lsm6ds3tr_init_dma_read()`successfully completes its 12-byte transfer into the background buffer.
+1. Parses the raw bytes into signed 16-bit integers (Little-Endian format)
+2. Applies unit conversion:
    - Accel: raw * 0.000122 * 9.80665 = m/s^2
    - Gyro: raw * 0.0175 = dps
-5. Subtracts calibration offsets.
-6. Updates internal `lsm6ds3tr_data_t` structure
-
-**Returns:** `1` on success, `0` on I2C failure.
+3. Subtracts calibration offsets.
+4. Updates internal `LSM6DS3TR_Data_t` structure. As of v0.2.0, the IMU raw data relies on sensor's internal hardware filter
 
 ---
 
@@ -181,7 +184,7 @@ Primary data acquistion pipeline handling data processing asynchronously.
 LSM6DS3TR_Data_t* lsm6ds3tr_get_data(void);
 ```
 
-Returns a pointer to the internal `LSM6DS3TR_Data_t` struct. Use this to access the latest sensor readings.
+Returns a pointer to the internal `LSM6DS3TR_Data_t` struct. Use this to access the latest DMA sensor readings.
 
 **Example:**
 ```c
