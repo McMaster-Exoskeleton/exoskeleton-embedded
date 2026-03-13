@@ -18,8 +18,8 @@ Step-by-step guide for testing the LSM6DS3TR-C IMU using the **sensor-testing** 
 |---|---|---|
 | VCC | 3.3V | Power supply |
 | GND | GND | Ground |
-| SDA | PA8 (I2C3_SDA) | I2C data line |
-| SCL | PC9 (I2C3_SCL) | I2C clock line |
+| SCL | PA8 (I2C3_SCL) | I2C clock line |
+| SDA | PC9 (I2C3_SDA) | I2C data line |
 | SA0 | GND | Sets I2C address to 0x6A |
 
 > **Note:** Ensure SA0 is connected to GND. This sets the 7-bit I2C address to `0x6A` (binary `1101010`). If SA0 is left floating or connected to VCC, the address will be `0x6B` and the driver will not detect the sensor.
