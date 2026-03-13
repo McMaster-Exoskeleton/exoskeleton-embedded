@@ -15,8 +15,8 @@ Hardware API reference for the LSM6DS3TR-C 6-axis IMU (accelerometer + gyroscope
 |---|---|
 | Sensor | LSM6DS3TR-C (6-axis IMU) |
 | Interface | I2C (7-bit address `0x6A`, SA0 pin LOW) |
-| Accelerometer range | +/- 4g |
-| Gyroscope range | +/- 500 dps (degrees per second) |
+| Accelerometer range | $\pm \ 4 \ g$ |
+| Gyroscope range | $\pm \ 500 \ dps$ (degrees per second) |
 | Output data rate (ODR) | 104 Hz (both accel and gyro) |
 | Data format | Little-endian (low byte first) |
 | Acquisition Rate | 500 Hz (every 2 ms) |
@@ -48,8 +48,8 @@ typedef struct {
 } AxisData_t;
 ```
 
-- **Accel filtered values** are in **m/s^2** (with gravity offset applied).
-- **Gyro filtered values** are in **dps** (degrees per second).
+- **Accel filtered values** are in **$m/s^2$** (with gravity offset applied).
+- **Gyro filtered values** are in **$dps$** (degrees per second).
 
 ### `LSM6DS3TR_Data_t`
 
@@ -70,9 +70,9 @@ typedef struct {
 
 ## API Functions
 
-- [lsm6ds3tr_init_driver()](#lsm6ds3tr_init_driver)
-- [lsm6ds3tr_check_connection()](#lsm6ds3tr_check_connection)
-- [lsm6ds3tr_configure()](#lsm6ds3tr_configure)
+- [lsm6ds3tr_init_driver](#lsm6ds3tr_init_driver)
+- [lsm6ds3tr_check_connection](#lsm6ds3tr_check_connection)
+- [lsm6ds3tr_configure](#lsm6ds3tr_configure)
 - [lsm6ds3tr_calibrate](#lsm6ds3tr_calibrate)
 - [lsm6ds3tr_read](#lsm6ds3tr_read)
 - [lsm6ds3tr_init_dma_read](#lsm6ds3tr_init_dma_read)
@@ -145,6 +145,8 @@ Standard blocking read fallback function.
 3. Applies conversions and offsets
 4. Updates the struct
 
+**Returns:** `1` if I2C read request was sucessful, `0` if the request failed or the sensor was lost.
+
 ---
 
 ### `lsm6ds3tr_init_dma_read`
@@ -171,10 +173,10 @@ void HAL_I2C_MemRxCpltCallback(I2C_HandleTypeDef *hi2c);
 Primary data acquistion pipeline handling data processing asynchronously. This is the hardware interrupt callback, which is automatically called by the HAL once `lsm6ds3tr_init_dma_read()`successfully completes its 12-byte transfer into the background buffer.
 1. Parses the raw bytes into signed 16-bit integers (Little-Endian format)
 2. Applies unit conversion:
-   - Accel: raw * 0.000122 * 9.80665 = m/s^2
-   - Gyro: raw * 0.0175 = dps
+   - Accel: $raw\times 0.000122\times 9.80665 = m/s^2$
+   - Gyro: $raw\times 0.0175 = dps$
 3. Subtracts calibration offsets.
-4. Updates internal `LSM6DS3TR_Data_t` structure. As of v0.2.0, the IMU raw data relies on sensor's internal hardware filter
+4. Updates internal `LSM6DS3TR_Data_t` structure. As of `v0.2.0`, the IMU raw data relies on sensor's internal hardware filter
 
 ---
 
@@ -214,8 +216,8 @@ THe latter two can be combined as mentioned above to make a 12-byte continuous b
 
 | Parameter | Value | Unit |
 |---|---|---|
-| Accel sensitivity (+/- 4g) | 0.000122 | $g/LSB$ |
-| Gyro sensitivity (+/- 500 dps) | 0.0175 | $dps/LSB$ |
+| Accel sensitivity ($\pm \ 4 \ g$) | 0.000122 | $g/LSB$ |
+| Gyro sensitivity ($\pm \ 500 \ dps$) | 0.0175 | $dps/LSB$ |
 | Gravity constant | 9.80665 | $m/s^2$ |
 
 ---
