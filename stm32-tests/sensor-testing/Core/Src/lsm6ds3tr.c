@@ -62,15 +62,18 @@ uint8_t lsm6ds3tr_check_connection(void)
     }
 
     uint8_t who_am_i;
+	
     HAL_StatusTypeDef ret = HAL_I2C_Mem_Read(_hi2c, LSM6DS3TR_ADDRESS, REG_WHO_AM_I, 1, &who_am_i, 1, 100);
 
     if (ret == HAL_OK && who_am_i == WHO_AM_I_VAL)
     {
         imu_data.state = SENSOR_STATE_CONNECTED;
+
         return 1;
     }
 
     imu_data.state = SENSOR_STATE_LOST;
+
     return 0;
 }
 
@@ -265,7 +268,7 @@ void HAL_I2C_MemRxCpltCallback(I2C_HandleTypeDef *hi2c)
         // Unit Conversions + Offset Application (MATCHING THE READ FUNCTION)
         float x_accel_ms2 = (x_accel * LIN_ACCEL_SENSITIVITY_4G) * GRAVITY - offset_ax;
         float y_accel_ms2 = (y_accel * LIN_ACCEL_SENSITIVITY_4G) * GRAVITY - offset_ay;
-        float z_accel_ms2 = (z_accel * LIN_ACCEL_SENSITIVITY_4G) * GRAVITY + offset_az;
+        float z_accel_ms2 = (z_accel * LIN_ACCEL_SENSITIVITY_4G) * GRAVITY - offset_az;
 
         float x_gyro_dps = (x_gyro * ANG_VEL_SENSITIVITY_500DPS) - offset_gx;
         float y_gyro_dps = (y_gyro * ANG_VEL_SENSITIVITY_500DPS) - offset_gy;
