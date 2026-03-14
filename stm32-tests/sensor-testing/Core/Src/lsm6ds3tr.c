@@ -6,6 +6,7 @@
  */
 
 #include "lsm6ds3tr.h"
+#include "imu_buffer.h"
 #include "main.h"
 #include <stdio.h>
 
@@ -20,6 +21,8 @@
 
 static I2C_HandleTypeDef *_hi2c;
 static LSM6DS3TR_Data_t imu_data;
+
+static int temp_count = 0;
 
 static uint8_t dma_rx_buffer[12];
 
@@ -55,26 +58,27 @@ void lsm6ds3tr_init_driver(I2C_HandleTypeDef *hi2c)
 
 uint8_t lsm6ds3tr_check_connection(void)
 {
-    // Don't interrupt if the I2C bus is currently busy with DMA
-    if (HAL_I2C_GetState(_hi2c) != HAL_I2C_STATE_READY) {
-        // If we are busy, we are still connected.
-        return (imu_data.state == SENSOR_STATE_CONNECTED) ? 1 : 0;
-    }
+	// Don't interrupt if the I2C bus is currently busy with DMA
+	if (HAL_I2C_GetState(_hi2c) != HAL_I2C_STATE_READY)
+	{
+		// If we are busy, we are still connected.
+		return (imu_data.state == SENSOR_STATE_CONNECTED) ? 1 : 0;
+	}
 
-    uint8_t who_am_i;
-	
-    HAL_StatusTypeDef ret = HAL_I2C_Mem_Read(_hi2c, LSM6DS3TR_ADDRESS, REG_WHO_AM_I, 1, &who_am_i, 1, 100);
+	uint8_t who_am_i;
 
-    if (ret == HAL_OK && who_am_i == WHO_AM_I_VAL)
-    {
-        imu_data.state = SENSOR_STATE_CONNECTED;
+	HAL_StatusTypeDef ret = HAL_I2C_Mem_Read(_hi2c, LSM6DS3TR_ADDRESS, REG_WHO_AM_I, 1, &who_am_i, 1, 100);
 
-        return 1;
-    }
+	if (ret == HAL_OK && who_am_i == WHO_AM_I_VAL)
+	{
+		imu_data.state = SENSOR_STATE_CONNECTED;
 
-    imu_data.state = SENSOR_STATE_LOST;
+		return 1;
+	}
 
-    return 0;
+	imu_data.state = SENSOR_STATE_LOST;
+
+	return 0;
 }
 
 uint8_t lsm6ds3tr_configure(void)
@@ -85,7 +89,7 @@ uint8_t lsm6ds3tr_configure(void)
 	// Turn on Accelerometer -> configure accel (104 Hz ODR, 4g FS)
 	temp_data = ODR_104HZ | FS_ACCEL_4G;
 	ret = HAL_I2C_Mem_Write(_hi2c, LSM6DS3TR_ADDRESS, REG_CTRL1_XL, 1, &temp_data, 1, 100);
-	
+
 	if (ret != HAL_OK)
 		return 0;
 
@@ -112,47 +116,38 @@ uint8_t lsm6ds3tr_configure(void)
 
 void lsm6ds3tr_calibrate(void)
 {
-	HAL_StatusTypeDef ret;
+	// Ensure the sensor is connected and configured before reading samples
+	if (!lsm6ds3tr_check_connection())
+		return;
+	if (!lsm6ds3tr_configure())
+		return;
 
 	uint8_t data[12];
 
-	long total_off_gx = 0;
-	long total_off_gy = 0;
-	long total_off_gz = 0;
-
-	long total_off_ax = 0;
-	long total_off_ay = 0;
-	long total_off_az = 0;
+	long total_off_gx = 0, total_off_gy = 0, total_off_gz = 0;
 
 	for (int i = 0; i < 100; ++i)
 	{
 		HAL_I2C_Mem_Read(_hi2c, LSM6DS3TR_ADDRESS, REG_OUTX_L_G, 1, data, 12, 100);
 
-		int16_t curr_off_gx = ((int16_t)data[1] << 8) + data[0];
-		int16_t curr_off_gy = ((int16_t)data[3] << 8) + data[2];
-		int16_t curr_off_gz = ((int16_t)data[5] << 8) + data[4];
+		int16_t raw_gx = ((int16_t)data[1] << 8) + data[0];
+		int16_t raw_gy = ((int16_t)data[3] << 8) + data[2];
+		int16_t raw_gz = ((int16_t)data[5] << 8) + data[4];
 
-		int16_t curr_off_ax = ((int16_t)data[7] << 8) + data[6];
-		int16_t curr_off_ay = ((int16_t)data[9] << 8) + data[8];
-		int16_t curr_off_az = ((int16_t)data[11] << 8) + data[10];
-
-		total_off_gx += curr_off_gx;
-		total_off_gy += curr_off_gy;
-		total_off_gz += curr_off_gz;
+		total_off_gx += raw_gx;
+		total_off_gy += raw_gy;
+		total_off_gz += raw_gz;
 
 		HAL_Delay(3);
 	}
 
-	// TODO: Add Accelerometer calibration
-	offset_ax = 0;
-	offset_ay = 0;
-	offset_az = 0;
+	offset_ax = 0.0f;
+	offset_ay = 0.0f;
+	offset_az = 0.0f;
 
 	offset_gx = (total_off_gx / 100) * ANG_VEL_SENSITIVITY_500DPS;
 	offset_gy = (total_off_gy / 100) * ANG_VEL_SENSITIVITY_500DPS;
 	offset_gz = (total_off_gz / 100) * ANG_VEL_SENSITIVITY_500DPS;
-
-	calibrated = 1;
 }
 
 uint8_t lsm6ds3tr_read(void)
@@ -253,45 +248,52 @@ uint8_t lsm6ds3tr_init_dma_read(void)
 
 void HAL_I2C_MemRxCpltCallback(I2C_HandleTypeDef *hi2c)
 {
-    if (hi2c->Instance == _hi2c->Instance)
-    {
-        // Buffer Layout: [0 - 5] -> Gyroscope, [6 - 11] -> Accelerometer
+	if (hi2c->Instance == _hi2c->Instance)
+	{
+		// Buffer Layout: [0 - 5] -> Gyroscope, [6 - 11] -> Accelerometer
 
-        int16_t x_gyro = ((int16_t)dma_rx_buffer[1] << 8) + dma_rx_buffer[0];
-        int16_t y_gyro = ((int16_t)dma_rx_buffer[3] << 8) + dma_rx_buffer[2];
-        int16_t z_gyro = ((int16_t)dma_rx_buffer[5] << 8) + dma_rx_buffer[4];
+		int16_t x_gyro = ((int16_t)dma_rx_buffer[1] << 8) + dma_rx_buffer[0];
+		int16_t y_gyro = ((int16_t)dma_rx_buffer[3] << 8) + dma_rx_buffer[2];
+		int16_t z_gyro = ((int16_t)dma_rx_buffer[5] << 8) + dma_rx_buffer[4];
 
-        int16_t x_accel = ((int16_t)dma_rx_buffer[7] << 8) + dma_rx_buffer[6];
-        int16_t y_accel = ((int16_t)dma_rx_buffer[9] << 8) + dma_rx_buffer[8];
-        int16_t z_accel = ((int16_t)dma_rx_buffer[11] << 8) + dma_rx_buffer[10];
+		int16_t x_accel = ((int16_t)dma_rx_buffer[7] << 8) + dma_rx_buffer[6];
+		int16_t y_accel = ((int16_t)dma_rx_buffer[9] << 8) + dma_rx_buffer[8];
+		int16_t z_accel = ((int16_t)dma_rx_buffer[11] << 8) + dma_rx_buffer[10];
 
-        // Unit Conversions + Offset Application (MATCHING THE READ FUNCTION)
-        float x_accel_ms2 = (x_accel * LIN_ACCEL_SENSITIVITY_4G) * GRAVITY - offset_ax;
-        float y_accel_ms2 = (y_accel * LIN_ACCEL_SENSITIVITY_4G) * GRAVITY - offset_ay;
-        float z_accel_ms2 = (z_accel * LIN_ACCEL_SENSITIVITY_4G) * GRAVITY - offset_az;
+		float ax = (x_accel * LIN_ACCEL_SENSITIVITY_4G) * GRAVITY - offset_ax;
+		float ay = (y_accel * LIN_ACCEL_SENSITIVITY_4G) * GRAVITY - offset_ay;
+		float az = (z_accel * LIN_ACCEL_SENSITIVITY_4G) * GRAVITY + offset_az;
 
-        float x_gyro_dps = (x_gyro * ANG_VEL_SENSITIVITY_500DPS) - offset_gx;
-        float y_gyro_dps = (y_gyro * ANG_VEL_SENSITIVITY_500DPS) - offset_gy;
-        float z_gyro_dps = (z_gyro * ANG_VEL_SENSITIVITY_500DPS) - offset_gz;
+		float gx = (x_gyro * ANG_VEL_SENSITIVITY_500DPS) - offset_gx;
+		float gy = (y_gyro * ANG_VEL_SENSITIVITY_500DPS) - offset_gy;
+		float gz = (z_gyro * ANG_VEL_SENSITIVITY_500DPS) - offset_gz;
 
-        // Direct assignment (Hardware Filter is doing the work)
-        imu_data.accel.filt_x = x_accel_ms2;
-        imu_data.accel.filt_y = y_accel_ms2;
-        imu_data.accel.filt_z = z_accel_ms2;
+		// Direct assignment (Hardware Filter is doing the work)
+		imu_data.accel.filt_x = ax;
+		imu_data.accel.filt_y = ay;
+		imu_data.accel.filt_z = az;
 
-        imu_data.gyro.filt_x = x_gyro_dps;
-        imu_data.gyro.filt_y = y_gyro_dps;
-        imu_data.gyro.filt_z = z_gyro_dps;
+		imu_data.gyro.filt_x = gx;
+		imu_data.gyro.filt_y = gy;
+		imu_data.gyro.filt_z = gz;
 
-        // Store raw data
-        imu_data.accel.x = x_accel;
-        imu_data.accel.y = y_accel;
-        imu_data.accel.z = z_accel;
-        
-        imu_data.gyro.x = x_gyro;
-        imu_data.gyro.y = y_gyro;
-        imu_data.gyro.z = z_gyro;
-    }
+		// Store raw data
+		imu_data.accel.x = x_accel;
+		imu_data.accel.y = y_accel;
+		imu_data.accel.z = z_accel;
+
+		imu_data.gyro.x = x_gyro;
+		imu_data.gyro.y = y_gyro;
+		imu_data.gyro.z = z_gyro;
+
+		// Push to the circular buffer — READLATEST and READALL serve from here
+		if (temp_count % 5 == 0)
+		{
+			imu_buffer_push(HAL_GetTick(), ax, ay, az, gx, gy, gz);
+		}
+
+		temp_count++;
+	}
 }
 
 LSM6DS3TR_Data_t *lsm6ds3tr_get_data(void)

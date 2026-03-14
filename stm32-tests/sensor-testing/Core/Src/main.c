@@ -24,6 +24,7 @@
 #include <stdio.h>
 #include <string.h>
 #include "lsm6ds3tr.h"
+#include "imu_buffer.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -437,29 +438,85 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
 static void process_command(void)
 {
 	LSM6DS3TR_Data_t *imu = lsm6ds3tr_get_data();
-	uint16_t len;
+	uint16_t len = 0;
 
 	if (strcmp((char *)rx_buffer, "READ") == 0)
 	{
-
 		len = sprintf((char *)tx_buffer,
 					  "AX:%.2f AY:%.2f AZ:%.2f GX:%.2f GY:%.2f GZ:%.2f\r\n",
 					  imu->accel.filt_x, imu->accel.filt_y, imu->accel.filt_z,
 					  imu->gyro.filt_x, imu->gyro.filt_y, imu->gyro.filt_z);
+
 		HAL_UART_Transmit(&huart2, tx_buffer, len, 100);
+	}
+	else if (strcmp((char *)rx_buffer, "READLATEST") == 0)
+	{
+		IMUReading reading;
+
+		// Disable DMA interrupt while reading from the shared buffer
+		HAL_NVIC_DisableIRQ(DMA1_Stream1_IRQn);
+		int ok = imu_buffer_get_latest(&reading);
+		HAL_NVIC_EnableIRQ(DMA1_Stream1_IRQn);
+
+		if (ok)
+		{
+			len = sprintf((char *)tx_buffer,
+						  "LATEST AX:%.2f AY:%.2f AZ:%.2f GX:%.2f GY:%.2f GZ:%.2f\r\n",
+						  reading.ax, reading.ay, reading.az,
+						  reading.gx, reading.gy, reading.gz);
+		}
+		else
+		{
+			len = sprintf((char *)tx_buffer, "LATEST:EMPTY\r\n");
+		}
+
+		HAL_UART_Transmit(&huart2, tx_buffer, len, 200);
+	}
+	else if (strcmp((char *)rx_buffer, "READALL") == 0)
+	{
+		// Stack-allocate the snapshot to keep it off the heap.
+		// 100 * 24 bytes = 2400 bytes — requires _Min_Stack_Size >= 0x1000.
+		IMUReading snapshot[IMU_BUFFER_CAPACITY];
+		size_t count;
+
+		// Disable DMA interrupt while copying the entire buffer
+		HAL_NVIC_DisableIRQ(DMA1_Stream1_IRQn);
+		count = imu_buffer_get_all(snapshot);
+		HAL_NVIC_EnableIRQ(DMA1_Stream1_IRQn);
+
+		if (count == 0)
+		{
+			len = sprintf((char *)tx_buffer, "ALL:EMPTY\r\n");
+			HAL_UART_Transmit(&huart2, tx_buffer, len, 100);
+		}
+		else
+		{
+			// Header
+			len = sprintf((char *)tx_buffer, "ALL:COUNT=%u\r\n", (unsigned)count);
+			HAL_UART_Transmit(&huart2, tx_buffer, len, 100);
+
+			// Stream readings one at a time to avoid overflowing tx_buffer
+			for (size_t i = 0; i < count; ++i)
+			{
+				len = sprintf((char *)tx_buffer,
+							  "[%u]C: %d AX:%.2f AY:%.2f AZ:%.2f GX:%.2f GY:%.2f GZ:%.2f\r\n",
+							  (unsigned)i,
+							  snapshot[i].tick,
+							  snapshot[i].ax, snapshot[i].ay, snapshot[i].az,
+							  snapshot[i].gx, snapshot[i].gy, snapshot[i].gz);
+				// Timeout scaled to line length: 200 ms per line is generous at 115200
+				HAL_UART_Transmit(&huart2, tx_buffer, len, 200);
+			}
+		}
 	}
 	else if (strcmp((char *)rx_buffer, "STATUS") == 0)
 	{
 		lsm6ds3tr_check_connection();
 
 		if (imu->state == SENSOR_STATE_CONNECTED)
-		{
 			len = sprintf((char *)tx_buffer, "STATUS:CONNECTED\r\n");
-		}
 		else
-		{
 			len = sprintf((char *)tx_buffer, "STATUS:LOST\r\n");
-		}
 
 		HAL_UART_Transmit(&huart2, tx_buffer, len, 100);
 	}
@@ -486,7 +543,7 @@ static void process_command(void)
 	else
 	{
 		len = sprintf((char *)tx_buffer, "ERR:UNKNOWN_CMD\r\n");
-		
+
 		HAL_UART_Transmit(&huart2, tx_buffer, len, 100);
 	}
 }
