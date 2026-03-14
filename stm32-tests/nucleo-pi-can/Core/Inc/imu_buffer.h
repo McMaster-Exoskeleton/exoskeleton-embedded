@@ -9,10 +9,12 @@
 #define INC_IMU_BUFFER_H_
 
 #include <stddef.h>
+#include <stdint.h>
 
 #define IMU_BUFFER_CAPACITY 100
 
 typedef struct {
+	uint32_t tick;
     float ax, ay, az;   /* Accelerometer (m/s^2) */
     float gx, gy, gz;   /* Gyroscope (dps) */
 } IMUReading;
@@ -22,7 +24,7 @@ extern "C" {
 #endif
 
 /** Push one IMU reading into the global ring buffer. */
-void imu_buffer_push(float ax, float ay, float az,
+void imu_buffer_push(uint32_t tick, float ax, float ay, float az,
                      float gx, float gy, float gz);
 
 /**

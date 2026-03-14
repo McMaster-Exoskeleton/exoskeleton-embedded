@@ -22,7 +22,6 @@
  * Memory: 100 * sizeof(IMUReading) = 100 * 24 bytes = 2400 bytes in .bss
  *         (all floats, zero-initialised by the C runtime).
  */
-
 #include "imu_buffer.h"
 
 typedef struct {
@@ -33,10 +32,12 @@ typedef struct {
 
 static IMUCircularBuffer g_imu_buf;  /* zero-initialised in .bss */
 
-void imu_buffer_push(float ax, float ay, float az,
+void imu_buffer_push(uint32_t tick, float ax, float ay, float az,
                      float gx, float gy, float gz)
 {
     IMUReading *slot = &g_imu_buf.buf[g_imu_buf.head];
+
+    slot->tick = tick;
     slot->ax = ax; slot->ay = ay; slot->az = az;
     slot->gx = gx; slot->gy = gy; slot->gz = gz;
 

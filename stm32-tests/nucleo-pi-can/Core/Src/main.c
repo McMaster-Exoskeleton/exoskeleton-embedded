@@ -122,12 +122,13 @@ int main(void)
   lsm6ds3tr_calibrate();
 
   /* USER CODE END 2 */
-
+  uint32_t last_tick = HAL_GetTick();
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
   while (1)
   {
     /* USER CODE END WHILE */
+
 
     /* USER CODE BEGIN 3 */
 
@@ -139,12 +140,17 @@ int main(void)
 
     // Non-blocking DMA read; result is processed in HAL_I2C_MemRxCpltCallback
     // which also pushes to the circular buffer and updates imu_data.
-    lsm6ds3tr_init_dma_read();
 
-    // Transmit the latest accel values over CAN
-    CAN_Send_IMU_Data();
+	if ((HAL_GetTick() - last_tick) >= 2)
+	{
+		last_tick = HAL_GetTick();
 
-    HAL_Delay(20);
+		CAN_Send_IMU_Data();
+
+		lsm6ds3tr_init_dma_read();
+
+	}
+
   }
   /* USER CODE END 3 */
 }
@@ -395,6 +401,29 @@ void CAN_Send_IMU_Data(void)
   TxData[4] = az & 0xFF;
   TxData[5] = (az >> 8) & 0xFF;
 
+  // Add message to the TX Mailbox
+  if (HAL_CAN_GetTxMailboxesFreeLevel(&hcan1) > 0)
+  {
+	  HAL_CAN_AddTxMessage(&hcan1, &TxHeader, TxData, &TxMailbox);
+  }
+
+  // Gryoscope TX Frame
+  TxHeader.StdId = 0x124;
+
+  int16_t gx = (int16_t)(imu->gyro.filt_x * 100);
+  int16_t gy = (int16_t)(imu->gyro.filt_y * 100);
+  int16_t gz = (int16_t)(imu->gyro.filt_z * 100);
+
+  // Packing: Little to Big Endian
+  TxData[0] = gx & 0xFF;
+  TxData[1] = (gx >> 8) & 0xFF;
+
+  TxData[2] = gy & 0xFF;
+  TxData[3] = (gy >> 8) & 0xFF;
+
+  TxData[4] = gz & 0xFF;
+  TxData[5] = (gz >> 8) & 0xFF;
+
 
   if (HAL_CAN_GetTxMailboxesFreeLevel(&hcan1) > 0) {
     HAL_CAN_AddTxMessage(&hcan1, &TxHeader, TxData, &TxMailbox);
@@ -508,8 +537,9 @@ static void process_command(void)
       for (size_t i = 0; i < count; ++i)
       {
         len = sprintf((char*)tx_buffer,
-            "[%u] AX:%.2f AY:%.2f AZ:%.2f GX:%.2f GY:%.2f GZ:%.2f\r\n",
+            "[%u]C: %d AX:%.2f AY:%.2f AZ:%.2f GX:%.2f GY:%.2f GZ:%.2f\r\n",
             (unsigned)i,
+			snapshot[i].tick,
             snapshot[i].ax, snapshot[i].ay, snapshot[i].az,
             snapshot[i].gx, snapshot[i].gy, snapshot[i].gz);
         // Timeout scaled to line length: 200 ms per line is generous at 115200

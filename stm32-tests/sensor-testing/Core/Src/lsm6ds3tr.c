@@ -128,13 +128,13 @@ void lsm6ds3tr_calibrate(void)
 	{
 		HAL_I2C_Mem_Read(_hi2c, LSM6DS3TR_ADDRESS, REG_OUTX_L_G, 1, data, 12, 100);
 
-		int16_t curr_off_ax = ((int16_t)data[1] << 8) + data[0];
-		int16_t curr_off_ay = ((int16_t)data[3] << 8) + data[2];
-		int16_t curr_off_az = ((int16_t)data[5] << 8) + data[4];
+		int16_t curr_off_gx = ((int16_t)data[1] << 8) + data[0];
+		int16_t curr_off_gy = ((int16_t)data[3] << 8) + data[2];
+		int16_t curr_off_gz = ((int16_t)data[5] << 8) + data[4];
 
-		int16_t curr_off_gx = ((int16_t)data[7] << 8) + data[6];
-		int16_t curr_off_gy = ((int16_t)data[9] << 8) + data[8];
-		int16_t curr_off_gz = ((int16_t)data[11] << 8) + data[10];
+		int16_t curr_off_ax = ((int16_t)data[7] << 8) + data[6];
+		int16_t curr_off_ay = ((int16_t)data[9] << 8) + data[8];
+		int16_t curr_off_az = ((int16_t)data[11] << 8) + data[10];
 
 		total_off_gx += curr_off_gx;
 		total_off_gy += curr_off_gy;

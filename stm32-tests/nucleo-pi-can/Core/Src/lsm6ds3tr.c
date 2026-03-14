@@ -184,6 +184,7 @@ uint8_t lsm6ds3tr_read(void)
 	int16_t x_gyro  = ((int16_t)buffer[1] << 8) + buffer[0];
 	int16_t y_gyro  = ((int16_t)buffer[3] << 8) + buffer[2];
 	int16_t z_gyro  = ((int16_t)buffer[5] << 8) + buffer[4];
+
 	int16_t x_accel = ((int16_t)buffer[7] << 8) + buffer[6];
 	int16_t y_accel = ((int16_t)buffer[9] << 8) + buffer[8];
 	int16_t z_accel = ((int16_t)buffer[11] << 8) + buffer[10];
@@ -254,9 +255,10 @@ uint8_t lsm6ds3tr_init_dma_read(void)
  * Converts the 12-byte DMA buffer to physical units, updates imu_data, and
  * pushes the new reading into the circular buffer for UART retrieval.
  * ----------------------------------------------------------------------- */
-
+static int temp_count = 0;
 void HAL_I2C_MemRxCpltCallback(I2C_HandleTypeDef *hi2c)
 {
+
 	if (hi2c->Instance != _hi2c->Instance) return;
 
 	// Buffer layout: bytes [0-5] gyro, bytes [6-11] accel (little-endian)
@@ -283,7 +285,10 @@ void HAL_I2C_MemRxCpltCallback(I2C_HandleTypeDef *hi2c)
 	imu_data.gyro.x  = x_gyro;  imu_data.gyro.y  = y_gyro;  imu_data.gyro.z  = z_gyro;
 
 	// Push to the circular buffer — READLATEST and READALL serve from here
-	imu_buffer_push(ax, ay, az, gx, gy, gz);
+	if(temp_count % 5 == 0) {
+	    imu_buffer_push(HAL_GetTick(), ax, ay, az, gx, gy, gz);
+	}
+	temp_count++;
 }
 
 /* --------------------------------------------------------------------------
