@@ -20,9 +20,6 @@ Step-by-step guide for testing the LSM6DS3TR-C IMU using the **sensor-testing** 
 | GND | GND | Ground |
 | SCL | PA8 (I2C3_SCL) | I2C clock line |
 | SDA | PC9 (I2C3_SDA) | I2C data line |
-| SA0 | GND | Sets I2C address to 0x6A |
-
-> **Note:** Ensure SA0 is connected to GND. This sets the 7-bit I2C address to `0x6A` (binary `1101010`). If SA0 is left floating or connected to VCC, the address will be `0x6B` and the driver will not detect the sensor.
 
 ---
 
@@ -196,9 +193,13 @@ Type `quit` or press `Ctrl+C` to close the script.
 
 ### STATUS returns LOST
 
+**The most common cause of this error is that the LSM6DS3TR has been moved around excessively.** <br>
+The initial IMU PCB's may have wiring defects, which cause them to lose connection when moved around alot. <br>
+**Fix**: 1. Unplug the microcontroller from your computer, then plug it back in **without moving the IMU**. <br>
+         2. Type in STATUS to verify connection. If status is still LOST, this may not have been the cause of the 'lost' status.
+
 **Possible causes:**
 - I2C wires are not connected or connected to the wrong pins.
-- SA0 pin is not connected to GND (address mismatch).
 - The IMU board is not powered (check 3.3V connection).
 
 **Fix:** Double-check all wiring against the [Wiring table](#wiring-i2c3) above.
