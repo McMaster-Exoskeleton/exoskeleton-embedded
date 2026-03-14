@@ -177,7 +177,7 @@ Type `quit` or press `Ctrl+C` to close the script.
 |---|---|---|
 | `READ` | `AX:<val> AY:<val> AZ:<val> GX:<val> GY:<val> GZ:<val>` | Filtered accel (m/s^2) and gyro (dps) readings |
 | `STATUS` | `STATUS:CONNECTED` or `STATUS:LOST` | IMU I2C connection status |
-| `REGISTER` | `REGISTER:0x6A` | I2C device address |
+| `REGISTER` | `REGISTER:0x6B` | I2C device address |
 | `CONFIG` | `GYRO_CFG:0x44 ACCEL_CFG:0x48` | Gyro and accel control register values |
 | `POWER` | `POWER_CFG:0x00` | Power configuration register value |
 
@@ -194,9 +194,11 @@ Type `quit` or press `Ctrl+C` to close the script.
 ### STATUS returns LOST
 
 **The most common cause of this error is that the LSM6DS3TR has been moved around excessively.** <br>
-The initial IMU PCB's may have wiring defects, which cause them to lose connection when moved around alot. <br>
-**Fix**: 1. Unplug the microcontroller from your computer, then plug it back in **without moving the IMU**. <br>
-         2. Type in STATUS to verify connection. If status is still LOST, this may not have been the cause of the 'lost' status.
+The initial IMU PCB's may have wiring defects, which causes them to lose connection when moved around alot. <br>
+<br>
+**Fix**: <br>
+1. Unplug the microcontroller from your computer, then plug it back in **without moving the IMU**. <br>
+2. Type in STATUS to verify connection. If status is still LOST, this may not have been the cause of the 'lost' status.
 
 **Possible causes:**
 - I2C wires are not connected or connected to the wrong pins.
