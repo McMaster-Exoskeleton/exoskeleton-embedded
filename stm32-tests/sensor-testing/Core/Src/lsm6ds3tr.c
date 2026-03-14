@@ -71,12 +71,18 @@ uint8_t lsm6ds3tr_check_connection(void)
 
 	if (ret == HAL_OK && who_am_i == WHO_AM_I_VAL)
 	{
+		if (imu_data.state == SENSOR_STATE_LOST)
+				{
+					lsm6ds3tr_configure();
+				}
 		imu_data.state = SENSOR_STATE_CONNECTED;
 
 		return 1;
 	}
 
-	imu_data.state = SENSOR_STATE_LOST;
+	HAL_I2C_DeInit(_hi2c);
+	HAL_Delay(5);
+	HAL_I2C_Init(_hi2c);
 
 	return 0;
 }
