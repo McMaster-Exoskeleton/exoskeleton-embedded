@@ -102,7 +102,7 @@ lsm6ds3tr_init_driver(&hi2c3);
 uint8_t lsm6ds3tr_check_connection(void);
 ```
 
-Verifies if the I2C bus is busy with a DMA transfer. If the bus is free, it reads the `WHO_AM_I` register (`0x0F`) to confirm the sensor is responsive. A successful read returns `0x6A` and updates the internal sensor state to connected.
+Verifies if the I2C bus is busy with a DMA transfer. If the bus is free, it reads the `WHO_AM_I` register (`0x0F`) to confirm the sensor is responsive. A successful read returns `0x6A` and updates the internal sensor state to connected. <br>
 Note: This `0x6A` value is hardcoded into the LSM6DS3TR-C chip, and this same value being the I2C adress for `SD0` -> `LOW` (GND) has no effect on functionality. 
 
 **Returns:** `1` if connected, `0` if not.
