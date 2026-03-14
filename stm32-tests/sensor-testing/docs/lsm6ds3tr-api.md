@@ -14,7 +14,7 @@ Hardware API reference for the LSM6DS3TR-C 6-axis IMU (accelerometer + gyroscope
 | Parameter | Value |
 |---|---|
 | Sensor | LSM6DS3TR-C (6-axis IMU) |
-| Interface | I2C (7-bit address `0x6A`, SA0 pin LOW) |
+| Interface | I2C (7-bit address `0x6B`, SA0 pin HIGH) |
 | Accelerometer range | $\pm \ 4 \ g$ |
 | Gyroscope range | $\pm \ 500 \ dps$ (degrees per second) |
 | Output data rate (ODR) | 104 Hz (both accel and gyro) |
@@ -102,7 +102,8 @@ lsm6ds3tr_init_driver(&hi2c3);
 uint8_t lsm6ds3tr_check_connection(void);
 ```
 
-Reads the `WHO_AM_I` register (`0x0F`) and verifies if the I2C bus is busy with a DMA transfer. If the bus is free, the response is `0x6A`. Updates the internal sensor state.
+Verifies if the I2C bus is busy with a DMA transfer. If the bus is free, it reads the `WHO_AM_I` register (`0x0F`) to confirm the sensor is responsive. A successful read returns `0x6A` and updates the internal sensor state to connected.
+Note: This `0x6A` value is hardcoded into the LSM6DS3TR-C chip, and this same value being the I2C adress for `SD0` -> `LOW` (GND) has no effect on functionality. 
 
 **Returns:** `1` if connected, `0` if not.
 
