@@ -1,4 +1,4 @@
-# AK70-9 Motor API Test Cases
+# AK70-9 Motor Testing
 
 Manual test procedures for verifying each motor control function.
 Run these tests using `python scripts/motor_test.py` with the motor powered and connected.
