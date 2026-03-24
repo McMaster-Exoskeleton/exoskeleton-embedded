@@ -154,7 +154,7 @@ Direction: Pi → specific STM32.
 
 ```
 Bytes 0-1: position    (int16, scaled × 10)     — degrees
-Bytes 2-3: speed       (int16, scaled ÷ 10)     — ERPM
+Bytes 2-3: speed       (int16, raw × 10 = ERPM)  — ERPM
 Bytes 4-5: current     (int16, scaled × 100)    — amps
 Byte  6:   temperature (int8)                   — degrees C
 Byte  7:   error_code  (uint8)                  — MotorErrorCode enum
@@ -410,7 +410,7 @@ The documentation file will contain:
 | ESTOP | On-demand | Sent immediately when triggered |
 | HEARTBEAT | Future use | Not yet implemented |
 
-**Bus bandwidth check:** At 1 Mbit/s, each standard CAN frame (11-bit ID, 8 data bytes) takes ~130 us including overhead. With 4 nodes each sending IMU_ACCEL + IMU_GYRO + MOTOR_STATUS at 500 Hz, plus 4 TORQUE_CMD at 500 Hz = 16 message types × 500 Hz = 8000 messages/sec × 130 us = ~1.04 seconds of bus time per second. This is at the bus limit. Consider reducing IMU/motor status rate to 200-250 Hz for safety margin (~40-50% bus utilization).
+**Bus bandwidth check:** At 1 Mbit/s, a standard CAN frame takes ~76-130 us depending on DLC (DLC 2 ≈ 76 us, DLC 6 ≈ 114 us, DLC 8 ≈ 130 us). With 4 nodes each sending IMU_ACCEL (DLC 6) + IMU_GYRO (DLC 6) + MOTOR_STATUS (DLC 8) at 500 Hz, plus 4 TORQUE_CMD (DLC 2) at 500 Hz, total bus utilization is approximately 85-90%. This leaves very little margin for retransmissions or bus errors. Consider reducing IMU/motor status rate to 200-250 Hz for a safer ~40-50% bus utilization.
 
 **VESC command timeout:** The VESC firmware has a ~1-2 second internal command timeout. The application layer (not the CAN API) is responsible for re-sending torque commands to keep motors active. The existing `uart_cmd_refresh_tick()` pattern (re-send every 50 ms) should be adapted for CAN torque commands.
 
