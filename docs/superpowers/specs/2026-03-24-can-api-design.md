@@ -86,7 +86,7 @@ Ordered by CAN priority (lower value = higher bus priority):
 | Type | Value | Direction | DLC | Description |
 |------|-------|-----------|-----|-------------|
 | ESTOP | 0x0 | Any → All | 1 | Emergency stop (highest priority) |
-| TORQUE_CMD | 0x1 | Pi → STM32 | 4 | Torque command from ML model |
+| TORQUE_CMD | 0x1 | Pi → STM32 | 2 | Torque command from ML model |
 | MOTOR_STATUS | 0x2 | STM32 → Pi | 8 | Motor position, speed, current, temp, error |
 | IMU_ACCEL | 0x3 | STM32 → Pi | 6 | Accelerometer XYZ |
 | IMU_GYRO | 0x4 | STM32 → Pi | 6 | Gyroscope XYZ |
@@ -113,9 +113,19 @@ Ordered by CAN priority (lower value = higher bus priority):
 - This allows hardware filtering: standard frames = network messages, extended frames = motor feedback
 - 11 bits provides 16 message types × 8 nodes × 16 destinations = more than enough
 
+### Migration from Legacy IDs
+
+The existing production firmware uses hardcoded standard CAN IDs:
+- `0x123` — IMU accelerometer data
+- `0x124` — IMU gyroscope data
+
+Under the new ID scheme, these values fall within the MOTOR_STATUS range and would be misinterpreted. **All nodes must be updated to the new API simultaneously.** The old hardcoded IDs are fully replaced by the structured IDs from this spec (e.g., Left Hip IMU accel becomes `0x190` instead of `0x123`). Do not run old and new firmware on the same bus at the same time.
+
 ## Message Data Formats
 
-All multi-byte values are **little-endian** (ARM native byte order).
+All CAN API messages use **little-endian** byte order (ARM native).
+
+**Note on VESC motor protocol:** The VESC motor driver protocol (used by ak70_9 over extended CAN frames) uses big-endian byte order. The MOTOR_STATUS message in this API is NOT a raw passthrough of VESC data — the STM32 application reads motor feedback via `ak70_9.c` (which decodes big-endian VESC frames), then re-encodes the values into little-endian format when calling `can_send_motor_status()`. This keeps all inter-node messages consistently little-endian.
 
 ### ESTOP (DLC: 1)
 
@@ -129,12 +139,13 @@ Byte 0: reason (uint8)
 
 Broadcast to all nodes. Any node can send. No response expected.
 
-### TORQUE_CMD (DLC: 4)
+### TORQUE_CMD (DLC: 2)
 
 ```
-Bytes 0-3: torque (int32, scaled × 1000)
+Bytes 0-1: torque (int16, scaled × 1000)
   e.g., 5500 = 5.5 Nm
   Range: ±32,000 (±32 Nm, matching AK70-9 limits)
+  int16 range of ±32,767 covers the full motor torque range at this scale
 ```
 
 Direction: Pi → specific STM32.
@@ -149,7 +160,7 @@ Byte  6:   temperature (int8)                   — degrees C
 Byte  7:   error_code  (uint8)                  — MotorErrorCode enum
 ```
 
-Matches existing motor feedback format from ak70_9. Direction: STM32 → Pi.
+Re-encoded from VESC big-endian feedback into little-endian. Direction: STM32 → Pi.
 
 ### IMU_ACCEL (DLC: 6)
 
@@ -279,12 +290,23 @@ int can_send_estop(uint8_t src_node, uint8_t reason);
 int can_parse_estop(const CanFrame *frame, uint8_t *reason);
 ```
 
+### Implicit Node ID
+
+`can_common_init(hcan, my_node_id)` stores `my_node_id` internally. Send functions use it as follows:
+- `can_send_imu_accel(src_node, ...)` — caller passes `src_node` explicitly (typically `my_node_id`)
+- `can_send_torque_cmd(dest_node, ...)` — source is implicitly `my_node_id` (stored at init)
+- `can_send_motor_status(src_node, ...)` — caller passes `src_node` explicitly
+- `can_send_estop(src_node, ...)` — caller passes `src_node` explicitly
+
+This allows flexibility for testing (send as any node) while keeping the common case simple.
+
 ### Return Values
 
 All `can_send_*` and `can_parse_*` functions return:
-- `0` on success
-- `-1` on TX mailbox full / no frame available
-- `-2` on invalid argument
+- `1` on success
+- `0` on failure (TX mailbox full, no frame available, invalid argument)
+
+This matches the existing `can_bus.c` convention where `1` = success and `0` = failure.
 
 ## Python API (Raspberry Pi Side)
 
@@ -300,7 +322,7 @@ MSG_IMU_ACCEL, MSG_IMU_GYRO, MSG_HEARTBEAT = 0x3, 0x4, 0x5
 
 def build_can_id(msg_type: int, src_node: int, dest: int) -> int
 def parse_can_id(can_id: int) -> tuple[int, int, int]  # (msg_type, src, dest)
-def create_bus(channel: str = "can0", bitrate: int = 1000000) -> can.Bus
+def create_bus(channel: str = "can0") -> can.Bus  # bitrate configured at OS level via `ip link`
 def recv(bus: can.Bus, timeout: float = 0.01) -> can.Message | None
 ```
 
@@ -320,7 +342,7 @@ def send_torque_cmd(bus: can.Bus, dest_node: int, torque_nm: float)
 def parse_torque_cmd(msg: can.Message) -> float
 def send_motor_status(bus: can.Bus, src_node: int, position: float, speed: float,
                       current: float, temperature: int, error: int)
-def parse_motor_status(msg: can.Message) -> dict  # {position, speed, current, temperature, error}
+def parse_motor_status(msg: can.Message) -> tuple[float, float, float, int, int]  # (position, speed, current, temp, error)
 ```
 
 ### can_system.py
@@ -338,11 +360,18 @@ def parse_estop(msg: can.Message) -> int  # reason code
 
 `can_common_init()` auto-configures 3 filter banks based on `my_node_id`:
 
-| Filter | Purpose | ID Match | Mask | Accepts |
-|--------|---------|----------|------|---------|
-| 0 | ESTOP | `0x000` | `0x780` (type bits only) | All ESTOP messages from any node |
-| 1 | Commands for me | type+dest match | `0x78F` (type + dest bits) | TORQUE_CMD where dest = my_node_id |
-| 2 | Extended frames | accept all extended | — | Motor feedback (VESC protocol) |
+| Filter Bank | Mode | Scale | FIFO | ID Register | Mask Register | Accepts |
+|-------------|------|-------|------|-------------|---------------|---------|
+| 0 | Mask | 32-bit | FIFO0 | `0x000 << 5` (ESTOP type) | `0x780 << 5` (type bits only) | All ESTOP messages (highest priority, FIFO0) |
+| 1 | Mask | 32-bit | FIFO0 | `(0x080 \| my_node_id) << 5` | `0x78F << 5` (type + dest bits) | TORQUE_CMD where dest = my_node_id |
+| 2 | Mask | 32-bit | FIFO1 | IDE bit set | IDE bit set, ID mask = 0 | All extended frames (VESC motor feedback) |
+
+**Notes:**
+- STM32 bxCAN filter registers require the 11-bit standard ID to be left-shifted by 5 bits
+- Filter 2 must set the IDE bit (bit 2 of `FilterIdLow`) to match only extended frames
+- ESTOP and TORQUE_CMD use FIFO0 (priority traffic). Extended frames (motor feedback) use FIFO1 to prevent overflow under high bus load
+- `SlaveStartFilterBank` = 14 (CAN1-only configuration)
+- Both FIFO0 and FIFO1 RX interrupts are enabled; both feed into the same ring buffer
 
 ### Raspberry Pi (Software Filtering)
 
@@ -370,11 +399,33 @@ The documentation file will contain:
 7. **Hardware Setup** — MCP2515 HAT config, CAN wiring, termination resistors, `ip link` commands.
 8. **Troubleshooting** — Common issues and solutions.
 
+## Timing and Rates
+
+| Message | Recommended Rate | Notes |
+|---------|-----------------|-------|
+| IMU_ACCEL | 500 Hz (every 2 ms) | Matches current firmware loop rate |
+| IMU_GYRO | 500 Hz (every 2 ms) | Sent in same loop iteration as accel |
+| MOTOR_STATUS | 100-500 Hz | Matches VESC feedback rate (configurable on motor) |
+| TORQUE_CMD | Matches IMU rate | Pi sends after each ML inference cycle |
+| ESTOP | On-demand | Sent immediately when triggered |
+| HEARTBEAT | Future use | Not yet implemented |
+
+**Bus bandwidth check:** At 1 Mbit/s, each standard CAN frame (11-bit ID, 8 data bytes) takes ~130 us including overhead. With 4 nodes each sending IMU_ACCEL + IMU_GYRO + MOTOR_STATUS at 500 Hz, plus 4 TORQUE_CMD at 500 Hz = 16 message types × 500 Hz = 8000 messages/sec × 130 us = ~1.04 seconds of bus time per second. This is at the bus limit. Consider reducing IMU/motor status rate to 200-250 Hz for safety margin (~40-50% bus utilization).
+
+**VESC command timeout:** The VESC firmware has a ~1-2 second internal command timeout. The application layer (not the CAN API) is responsible for re-sending torque commands to keep motors active. The existing `uart_cmd_refresh_tick()` pattern (re-send every 50 ms) should be adapted for CAN torque commands.
+
+## Coexistence with Existing Code
+
+- `can_common.c` **supersedes** the existing `can_bus.c` in `apis/motor/Src/can/`. The new API handles all CAN init, filtering, send, recv, and ISR callbacks.
+- The existing `ak70_9.c` motor API will be updated to call `can_send_std()` / `can_recv()` from `can_common.c` instead of the old `can_bus_send_ext()` / `can_bus_recv()`.
+- The `CanFrame` struct in `can_common.h` is identical to the one in `can_frame.h`. The old `can_frame.h` and `ring_buffer.h` are deprecated — their contents are absorbed into `can_common.h`.
+- Since the STM32 HAL only allows one `HAL_CAN_RxFifo0MsgPendingCallback` per compilation unit, `can_common.c` owns all CAN ISR callbacks. The motor API receives its extended frames through `can_recv()` like any other consumer.
+
 ## Constraints and Decisions
 
 - **Language:** Pure C for STM32 (matches existing codebase, no C++ runtime overhead)
 - **Error handling:** Minimal — return codes only, no built-in safety primitives
-- **Byte order:** Little-endian throughout (ARM native)
+- **Byte order:** Little-endian for all inter-node messages (ARM native). VESC motor protocol remains big-endian (handled by ak70_9.c)
 - **CAN bitrate:** 1 Mbit/s (matches existing configuration)
 - **Ring buffer capacity:** 32 frames (matches existing implementation)
 - **Standard vs Extended IDs:** Standard 11-bit for inter-node, Extended 29-bit for VESC motor protocol only
