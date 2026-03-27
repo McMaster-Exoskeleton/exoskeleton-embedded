@@ -5,11 +5,11 @@
  *      Author: Juan Reyes
  *
  *  CubeMars AK70-9 KV60 Motor CAN API implementation.
- *  Uses the can_bus driver for all CAN transmissions via STM32 HAL.
+ *  Uses the CAN API transport layer for all CAN transmissions via STM32 HAL.
  */
 
 #include "can/ak70_9.h"
-#include "can/can_bus.h"
+#include "can_common.h"
 
 /* =========================================================================
  * Internal helper: clamp a float to [min_val, max_val]
@@ -26,7 +26,7 @@ static float clampf(float val, float min_val, float max_val) {
  * ========================================================================= */
 static void comm_can_transmit_eid(uint32_t id, const uint8_t *data, uint8_t len) {
     if (len > 8) len = 8;
-    can_bus_send_ext(id, data, len);
+    can_send_ext(id, data, len);
 }
 
 /* =========================================================================
