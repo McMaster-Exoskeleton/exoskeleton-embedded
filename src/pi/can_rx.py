@@ -2,7 +2,7 @@ import can
 import struct
 
 # Initialize bus
-bus = can.interface.Bus(channel="can0", interface="socketcan")
+bus = can.interface.Bus(channel="can1", interface="socketcan")
 
 print("Exoskeleton Telemetry Started...")
 
