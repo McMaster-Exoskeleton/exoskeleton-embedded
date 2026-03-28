@@ -54,6 +54,7 @@ NVIC.PendSV_IRQn=true\:0\:0\:false\:false\:true\:false\:false\:false
 NVIC.PriorityGroup=NVIC_PRIORITYGROUP_0
 NVIC.SVCall_IRQn=true\:0\:0\:false\:false\:true\:false\:false\:false
 NVIC.SysTick_IRQn=true\:0\:0\:true\:false\:true\:true\:true\:false
+NVIC.USART2_IRQn=true\:0\:0\:false\:false\:true\:true\:true\:true
 NVIC.UsageFault_IRQn=true\:0\:0\:false\:false\:true\:true\:false\:false
 PA11.Mode=CAN_Activate
 PA11.Signal=CAN1_RX
