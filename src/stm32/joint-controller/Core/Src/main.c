@@ -17,8 +17,8 @@
   */
 /* USER CODE END Header */
 /* Includes ------------------------------------------------------------------*/
-#include <lsm6ds3tr.h>
 #include "main.h"
+#include <lsm6ds3tr.h>
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
@@ -43,9 +43,11 @@
 /* USER CODE END PM */
 
 /* Private variables ---------------------------------------------------------*/
-CAN_HandleTypeDef  hcan1;
-DMA_HandleTypeDef  hdma_i2c3_rx;
-I2C_HandleTypeDef  hi2c3;
+CAN_HandleTypeDef hcan1;
+
+I2C_HandleTypeDef hi2c3;
+DMA_HandleTypeDef hdma_i2c3_rx;
+
 UART_HandleTypeDef huart2;
 
 /* USER CODE BEGIN PV */
@@ -67,8 +69,8 @@ void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
 static void MX_DMA_Init(void);
 static void MX_USART2_UART_Init(void);
-static void MX_I2C3_Init(void);
 static void MX_CAN1_Init(void);
+static void MX_I2C3_Init(void);
 /* USER CODE BEGIN PFP */
 static void process_command(void);
 void CAN_Send_IMU_Data(void);
@@ -108,11 +110,10 @@ int main(void)
 
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
-  MX_DMA_Init();          // Must be called before MX_I2C3_Init
+  MX_DMA_Init();
   MX_USART2_UART_Init();
-  MX_I2C3_Init();
   MX_CAN1_Init();
-
+  MX_I2C3_Init();
   /* USER CODE BEGIN 2 */
   HAL_CAN_Start(&hcan1);
   lsm6ds3tr_init_driver(&hi2c3);
@@ -121,14 +122,14 @@ int main(void)
   // Blocking calibration (~0.3 s). Keep the sensor stationary.
   lsm6ds3tr_calibrate();
 
-  /* USER CODE END 2 */
   uint32_t last_tick = HAL_GetTick();
+  /* USER CODE END 2 */
+
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
   while (1)
   {
     /* USER CODE END WHILE */
-
 
     /* USER CODE BEGIN 3 */
 
@@ -203,20 +204,6 @@ void SystemClock_Config(void)
 }
 
 /**
-  * @brief DMA Initialization Function
-  * @retval None
-  */
-static void MX_DMA_Init(void)
-{
-  /* DMA controller clock enable */
-  __HAL_RCC_DMA1_CLK_ENABLE();
-
-  /* DMA interrupt init — DMA1_Stream1 (I2C3 RX) */
-  HAL_NVIC_SetPriority(DMA1_Stream1_IRQn, 0, 0);
-  HAL_NVIC_EnableIRQ(DMA1_Stream1_IRQn);
-}
-
-/**
   * @brief CAN1 Initialization Function
   * @param None
   * @retval None
@@ -232,17 +219,18 @@ static void MX_CAN1_Init(void)
 
   /* USER CODE END CAN1_Init 1 */
   hcan1.Instance = CAN1;
-  hcan1.Init.Prescaler = 6;
+  hcan1.Init.Prescaler = 3;
   hcan1.Init.Mode = CAN_MODE_NORMAL;
   hcan1.Init.SyncJumpWidth = CAN_SJW_1TQ;
-  hcan1.Init.TimeSeg1 = CAN_BS1_11TQ;
-  hcan1.Init.TimeSeg2 = CAN_BS2_2TQ;
+  hcan1.Init.TimeSeg1 = CAN_BS1_10TQ;
+  hcan1.Init.TimeSeg2 = CAN_BS2_3TQ;
   hcan1.Init.TimeTriggeredMode = DISABLE;
   hcan1.Init.AutoBusOff = DISABLE;
   hcan1.Init.AutoWakeUp = DISABLE;
   hcan1.Init.AutoRetransmission = DISABLE;
   hcan1.Init.ReceiveFifoLocked = DISABLE;
   hcan1.Init.TransmitFifoPriority = DISABLE;
+  hcan1.Init.Mode = CAN_MODE_NORMAL;
   if (HAL_CAN_Init(&hcan1) != HAL_OK)
   {
     Error_Handler();
@@ -321,6 +309,22 @@ static void MX_USART2_UART_Init(void)
 }
 
 /**
+  * Enable DMA controller clock
+  */
+static void MX_DMA_Init(void)
+{
+
+  /* DMA controller clock enable */
+  __HAL_RCC_DMA1_CLK_ENABLE();
+
+  /* DMA interrupt init */
+  /* DMA1_Stream1_IRQn interrupt configuration */
+  HAL_NVIC_SetPriority(DMA1_Stream1_IRQn, 0, 0);
+  HAL_NVIC_EnableIRQ(DMA1_Stream1_IRQn);
+
+}
+
+/**
   * @brief GPIO Initialization Function
   * @param None
   * @retval None
@@ -353,12 +357,6 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(LD2_GPIO_Port, &GPIO_InitStruct);
-
-  /*Configure GPIO pin : PB10 */
-  GPIO_InitStruct.Pin = GPIO_PIN_10;
-  GPIO_InitStruct.Mode = GPIO_MODE_IT_RISING;
-  GPIO_InitStruct.Pull = GPIO_NOPULL;
-  HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
 
   /* USER CODE BEGIN MX_GPIO_Init_2 */
 
@@ -404,7 +402,9 @@ void CAN_Send_IMU_Data(void)
   // Add message to the TX Mailbox
   if (HAL_CAN_GetTxMailboxesFreeLevel(&hcan1) > 0)
   {
-	  HAL_CAN_AddTxMessage(&hcan1, &TxHeader, TxData, &TxMailbox);
+    HAL_StatusTypeDef ret = HAL_CAN_AddTxMessage(&hcan1, &TxHeader, TxData, &TxMailbox);
+    if (ret != HAL_OK)
+      HAL_GPIO_TogglePin(LD2_GPIO_Port, LD2_Pin);  // blink = TX failed
   }
 
   // Gryoscope TX Frame
@@ -425,8 +425,11 @@ void CAN_Send_IMU_Data(void)
   TxData[5] = (gz >> 8) & 0xFF;
 
 
-  if (HAL_CAN_GetTxMailboxesFreeLevel(&hcan1) > 0) {
-    HAL_CAN_AddTxMessage(&hcan1, &TxHeader, TxData, &TxMailbox);
+  if (HAL_CAN_GetTxMailboxesFreeLevel(&hcan1) > 0)
+  {
+    HAL_StatusTypeDef ret = HAL_CAN_AddTxMessage(&hcan1, &TxHeader, TxData, &TxMailbox);
+    if (ret != HAL_OK)
+      HAL_GPIO_TogglePin(LD2_GPIO_Port, LD2_Pin);
   }
 }
 
@@ -555,6 +558,15 @@ static void process_command(void)
     else
       len = sprintf((char*)tx_buffer, "STATUS:LOST\r\n");
     HAL_UART_Transmit(&huart2, tx_buffer, len, 100);
+  }
+  else if (strcmp((char*)rx_buffer, "CANERR") == 0)
+  {
+      uint32_t err = HAL_CAN_GetError(&hcan1);
+      len = sprintf((char*)tx_buffer, "CAN_ERR:0x%08lX TEC:%lu REC:%lu\r\n",
+          err,
+          (hcan1.Instance->ESR >> 16) & 0xFF,  // Transmit error counter
+          (hcan1.Instance->ESR >> 24) & 0xFF);  // Receive error counter
+      HAL_UART_Transmit(&huart2, tx_buffer, len, 100);
   }
   else if (strcmp((char*)rx_buffer, "REGISTER") == 0)
   {

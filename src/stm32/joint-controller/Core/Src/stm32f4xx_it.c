@@ -55,8 +55,7 @@
 /* USER CODE END 0 */
 
 /* External variables --------------------------------------------------------*/
-extern DMA_HandleTypeDef  hdma_i2c3_rx;
-extern I2C_HandleTypeDef  hi2c3;
+extern DMA_HandleTypeDef hdma_i2c3_rx;
 extern UART_HandleTypeDef huart2;
 /* USER CODE BEGIN EV */
 
@@ -226,20 +225,6 @@ void USART2_IRQHandler(void)
   /* USER CODE BEGIN USART2_IRQn 1 */
 
   /* USER CODE END USART2_IRQn 1 */
-}
-
-/**
-  * @brief This function handles I2C3 event interrupt.
-  */
-void I2C3_EV_IRQHandler(void)
-{
-  /* USER CODE BEGIN I2C3_EV_IRQn 0 */
-
-  /* USER CODE END I2C3_EV_IRQn 0 */
-  HAL_I2C_EV_IRQHandler(&hi2c3);
-  /* USER CODE BEGIN I2C3_EV_IRQn 1 */
-
-  /* USER CODE END I2C3_EV_IRQn 1 */
 }
 
 /* USER CODE BEGIN 1 */
