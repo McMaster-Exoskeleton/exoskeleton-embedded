@@ -380,9 +380,6 @@ void CAN_Send_IMU_Data(void)
   raw_ax = imu->accel.x;
   raw_ay = imu->accel.y;
   raw_az = imu->accel.z;
-  raw_gx = imu->gyro.x;
-  raw_gy = imu->gyro.y;
-  raw_gz = imu->gyro.z;
 
   HAL_NVIC_EnableIRQ(DMA1_Stream1_IRQn);
 
@@ -393,11 +390,15 @@ void CAN_Send_IMU_Data(void)
 
   TxData[0] = seq_counter;
 
-  // Pack X, Y, Z (Little Endian, which matches how the Pi unpacks '<hhh')
+  // Pack X
   TxData[1] = raw_ax & 0xFF;
   TxData[2] = (raw_ax >> 8) & 0xFF;
+
+  // Pack Y
   TxData[3] = raw_ay & 0xFF;
   TxData[4] = (raw_ay >> 8) & 0xFF;
+
+  // Pack Z
   TxData[5] = raw_az & 0xFF;
   TxData[6] = (raw_az >> 8) & 0xFF;
 
@@ -405,21 +406,30 @@ void CAN_Send_IMU_Data(void)
   if (HAL_CAN_GetTxMailboxesFreeLevel(&hcan1) > 0)
   {
     HAL_StatusTypeDef ret = HAL_CAN_AddTxMessage(&hcan1, &TxHeader, TxData, &TxMailbox);
-    
+
     if (ret != HAL_OK)
       HAL_GPIO_TogglePin(LD2_GPIO_Port, LD2_Pin); // blink = TX failed
   }
+
+  raw_gx = imu->gyro.x;
+  raw_gy = imu->gyro.y;
+  raw_gz = imu->gyro.z;
 
   // Gryoscope TX Frame
   TxHeader.StdId = 0x124;
   TxHeader.DLC = 6;
 
-  TxData[0] = raw_gx & 0xFF;
-  TxData[1] = (raw_gx >> 8) & 0xFF;
-  TxData[2] = raw_gy & 0xFF;
-  TxData[3] = (raw_gy >> 8) & 0xFF;
-  TxData[4] = raw_gz & 0xFF;
-  TxData[5] = (raw_gz >> 8) & 0xFF;
+  TxData[0] = seq_counter;
+
+  // Packing: Little to Big Endian
+  TxData[1] = raw_gx & 0xFF;
+  TxData[2] = (raw_gx >> 8) & 0xFF;
+
+  TxData[3] = raw_gy & 0xFF;
+  TxData[4] = (raw_gy >> 8) & 0xFF;
+
+  TxData[5] = raw_gz & 0xFF;
+  TxData[6] = (raw_gz >> 8) & 0xFF;
 
   if (HAL_CAN_GetTxMailboxesFreeLevel(&hcan1) > 0)
   {
@@ -428,7 +438,8 @@ void CAN_Send_IMU_Data(void)
     if (ret != HAL_OK)
       HAL_GPIO_TogglePin(LD2_GPIO_Port, LD2_Pin);
   }
-  // Toggle the onboard Green LED (PA5) eveery can message send
+
+  // Toggle the onboard Green LED (PA5) every can message send
   if (seq_counter == 0)
   {
     HAL_GPIO_TogglePin(LD2_GPIO_Port, LD2_Pin);
