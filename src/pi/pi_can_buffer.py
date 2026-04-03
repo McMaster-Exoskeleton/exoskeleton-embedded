@@ -1,5 +1,8 @@
 import can
+import struct
+import threading # // get data (here), send data, process data (ML)
 from collections import deque
+from time import sleep
 
 hz = 500
 target = 187 # // request by dilly
@@ -54,7 +57,7 @@ def process_msg(msg: can.Message):
 
         if sensor_type == "accel":
             stream_state['temp_accel'] = val
-            stream_state['timestamp'] = msg.timestamp
+            stream_state['timestamp'] = msg.timestamp * 1000 # // s -> ms
         else:
             stream_state['temp_gyro'] = val
             # // the id before this one provided the timestamp (id's are contiguous)
@@ -67,7 +70,7 @@ def process_msg(msg: can.Message):
     if stream_state['temp_accel'] is not None and stream_state['temp_gyro'] is not None:
 
         # // accumulate :p
-        stream_state['accumulator'] += hz
+        stream_state['accumulator'] += target
 
         if stream_state['accumulator'] >= hz:
             # // mettre la donnees dans le file d'attente (+horodatage)
@@ -86,24 +89,72 @@ def process_msg(msg: can.Message):
         stream_state['temp_accel'] = None
         stream_state['temp_gyro'] = None
 
-def main():
-    print("exo telemetry, i choose you")
-
+# // hardware thread to be running in background
+def can_listener():
     try:
         bus = can.interface.Bus(channel='can1', interface='socketcan')
-
         for msg in bus:
             process_msg(msg)
-
     except can.CanError as e:
         print(f"CAN error: {e}")
-    except KeyboardInterrupt:
-        print("you stopped it")
     finally:
         # // this might actually remove that annoying wall of
         # // text we get when we CTRL + C the python file lol
         if 'bus' in locals():
             bus.shutdown()
+
+# // for ML -> get data of any join
+def get_imu_data(imu_key):
+    if imu_key in imus:
+        return list(imus[imu_key]['queue'])
+    return []
+
+def main():
+    print("exo telemetry, i choose you")
+
+    # // start accumulating queues in background
+    can_thread = threading.Thread(target=can_listener, daemon=True)
+    can_thread.start()
+
+    print("initially filling queues")
+    sleep(1)
+
+    try:
+        # // ML stuff here
+        while True:
+            user_input = input("press ENTER to get current queue snapshot, press 'q' for full queue")
+
+            imu1_data = get_imu_data("imu1")
+
+            if len(imu1_data) == 0:
+                print("empty queue, wait a second")
+                continue
+            
+            # // full queue
+            if user_input.strip().lower() == 'q':
+                print(f"\n full queue snapshot ({len(imu1_data)}) samples")
+
+                for i, data_point in enumerate(imu1_data):
+                    timestamp, accel, gyro = data_point
+                    print(f"[{i+1:3}] Time: {timestamp:.4f} | "
+                          f"Accel: {accel[0]:6.2f}, {accel[1]:6.2f}, {accel[2]:6.2f} | "
+                          f"Gyro: {gyro[0]:6.2f}, {gyro[1]:6.2f}, {gyro[2]:6.2f}")
+                    
+                print()
+
+            else:          
+                latest_time, latest_accel, latest_gyro = imu1_data[-1]
+  
+                print(f"\n snapshot taken")
+                print(f"total samples in queueueue: {len(imu1_data)}")
+                print(f"UNIX time (ms): {latest_time}")
+                print(f"accel (x,y,z): {latest_accel}")
+                print(f"gyro (x,y,z): {latest_gyro}")
+                
+                print()
+
+    except KeyboardInterrupt:
+        print("\n stopping telemetry")
 
 if __name__ == "__main__":
     main()
