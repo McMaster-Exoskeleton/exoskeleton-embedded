@@ -26,7 +26,9 @@ imus = {
         'accumulator': 0,
         'queue': deque(maxlen=target),
         'temp_accel': None,
+        'temp_accel_seq': None,
         'temp_gyro': None,
+        'temp_gyro_seq': None,
         'timestamp': 0.0
         # // encoder reading to be added?
     }
@@ -54,14 +56,17 @@ def process_msg(msg: can.Message):
     stream_state = imus[imu_key]
 
     try:
-        x_raw, y_raw, z_raw = struct.unpack('<hhh', msg.data[0:6])
+        seq = msg.data[0]
+        x_raw, y_raw, z_raw = struct.unpack('<hhh', msg.data[1:7])
         val = (x_raw / 100.0, y_raw / 100.0, z_raw / 100.0)
 
         if sensor_type == "accel":
             stream_state['temp_accel'] = val
+            stream_state['temp_accel_seq'] = seq
             stream_state['timestamp'] = msg.timestamp * 1000 # // s -> ms
         else:
             stream_state['temp_gyro'] = val
+            stream_state['temp_gyro_seq'] = seq
             # // the id before this one provided the timestamp (id's are contiguous)
     
     except Exception as e:
@@ -71,6 +76,14 @@ def process_msg(msg: can.Message):
 
     # // its crucial that the contiguous data (accel + gyro) is a snychronized pair
     if stream_state['temp_accel'] is not None and stream_state['temp_gyro'] is not None:
+        # Validate seq counter pairing and drop mismatched pairs
+        if stream_state['temp_seq'] != stream_state['temp_gyro_seq']:
+            print(f"[{imu_key}] seq mismatch: accel={stream_state['temp_seq']} gyro={stream_state['temp_gyro_seq']}. dropped")
+            
+            stream_state['temp_accel'] = None
+            stream_state['temp_gyro']  = None
+            
+            return
 
         # // accumulate :p
         stream_state['accumulator'] += target
@@ -83,6 +96,7 @@ def process_msg(msg: can.Message):
                 stream_state['temp_gyro']
             )
             
+            # Lock once data_tuple is built once
             with queue_lock:
                 stream_state['queue'].append(data_tuple)
             
@@ -94,6 +108,8 @@ def process_msg(msg: can.Message):
         # // clear the temporary slots to wait for the next pair from the bus
         stream_state['temp_accel'] = None
         stream_state['temp_gyro'] = None
+        stream_state['temp_accel_seq'] = None
+        stream_state['temp_gyro_seq'] = None
     
 
 # // hardware thread to be running in background
