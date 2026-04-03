@@ -27,11 +27,13 @@ imus = {
         'queue': deque(maxlen=target),
         'temp_accel': None,
         'temp_gyro': None,
-        'timestampe': 0.0
+        'timestamp': 0.0
         # // encoder reading to be added?
     }
     # // future IMUS, add below
 }
+
+queue_lock = threading.Lock()
 
 print("buffering joint data...")
 
@@ -64,6 +66,7 @@ def process_msg(msg: can.Message):
     
     except Exception as e:
         print("noo, cannot unpack!")
+        
         return
 
     # // its crucial that the contiguous data (accel + gyro) is a snychronized pair
@@ -80,6 +83,9 @@ def process_msg(msg: can.Message):
                 stream_state['temp_gyro']
             )
             
+            with queue_lock:
+                stream_state['queue'].append(data_tuple)
+            
             stream_state['queue'].append(data_tuple)
             
             # // reset accumulator :p
@@ -88,6 +94,7 @@ def process_msg(msg: can.Message):
         # // clear the temporary slots to wait for the next pair from the bus
         stream_state['temp_accel'] = None
         stream_state['temp_gyro'] = None
+    
 
 # // hardware thread to be running in background
 def can_listener():
@@ -106,7 +113,9 @@ def can_listener():
 # // for ML -> get data of any join
 def get_imu_data(imu_key):
     if imu_key in imus:
-        return list(imus[imu_key]['queue'])
+        with queue_lock:
+            return list(imus[imu_key]['queue'])
+    
     return []
 
 def main():
