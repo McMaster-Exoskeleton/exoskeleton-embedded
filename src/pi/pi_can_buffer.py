@@ -77,9 +77,9 @@ def process_msg(msg: can.Message):
     # // its crucial that the contiguous data (accel + gyro) is a snychronized pair
     if stream_state['temp_accel'] is not None and stream_state['temp_gyro'] is not None:
         # Validate seq counter pairing and drop mismatched pairs
-        if stream_state['temp_seq'] != stream_state['temp_gyro_seq']:
-            print(f"[{imu_key}] seq mismatch: accel={stream_state['temp_seq']} gyro={stream_state['temp_gyro_seq']}. dropped")
-            
+        if stream_state['temp_accel_seq'] != stream_state['temp_gyro_seq']:
+            print(f"[{imu_key}] seq mismatch: accel={stream_state['temp_accel_seq']} gyro={stream_state['temp_gyro_seq']}. dropped")
+
             stream_state['temp_accel'] = None
             stream_state['temp_gyro']  = None
             
@@ -99,9 +99,7 @@ def process_msg(msg: can.Message):
             # Lock once data_tuple is built once
             with queue_lock:
                 stream_state['queue'].append(data_tuple)
-            
-            stream_state['queue'].append(data_tuple)
-            
+                        
             # // reset accumulator :p
             stream_state['accumulator'] -= hz
 
