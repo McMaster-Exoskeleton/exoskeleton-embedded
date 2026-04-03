@@ -18,11 +18,16 @@ imu4_a_id = 0x129
 imu4_g_id = 0x130
 '''
 
-# // hold state (accumulator, queue) for each IMU. queue has ('time', '(x,y,z)')
-can_streams = {
-    imu1_a_id: {'accumulator': 0, 'queue': deque(maxlen=target)},
-    imu1_g_id: {'accumulator': 0, 'queue': deque(maxlen=target)}
-    # add rest
+imus = {
+    "imu1": {
+        'accumulator': 0,
+        'queue': deque(maxlen=target),
+        'temp_accel': None,
+        'temp_gyro': None,
+        'timestampe': 0.0
+        # // encoder reading to be added?
+    }
+    # // future IMUS, add below
 }
 
 print("buffering joint data...")
@@ -31,31 +36,55 @@ def process_msg(msg: can.Message):
     can_id = msg.arbitration_id
 
     # // if the id is something like the power readings for the IMU, ignore
-    if can_id not in can_streams:
+    if can_id == imu1_a_id:
+        imu_key = "imu1"
+        sensor_type = "accel"
+    elif can_id == imu1_g_id:
+        imu_key = "imu1"
+        sensor_type = "gyro"
+    else:
         return
 
-    # // get accumulator, and queue for the ID -> accumulate
-    stream_state = can_streams[can_id]
-    stream_state['accumulator'] += target
+    # // access a specific imus data for appending
+    stream_state = imus[imu_key]
 
-    if stream_state['accumulator'] >= hz:
-        try:
-            x_raw, y_raw, z_raw = struct.unpack('<hhh', msg.data[0:6])
+    try:
+        x_raw, y_raw, z_raw = struct.unpack('<hhh', msg.data[0:6])
+        val = (x_raw / 100.0, y_raw / 100.0, z_raw / 100.0)
 
-            x = x_raw / 100.0
-            y = y_raw / 100.0
-            z = z_raw / 100.0
+        if sensor_type == "accel":
+            stream_state['temp_accel'] = val
+            stream_state['timestamp'] = msg.timestamp
+        else:
+            stream_state['temp_gyro'] = val
+            # // the id before this one provided the timestamp (id's are contiguous)
+    
+    except Exception as e:
+        print("noo, cannot unpack!")
+        return
 
+    # // its crucial that the contiguous data (accel + gyro) is a snychronized pair
+    if stream_state['temp_accel'] is not None and stream_state['temp_gyro'] is not None:
+
+        # // accumulate :p
+        stream_state['accumulator'] += hz
+
+        if stream_state['accumulator'] >= hz:
             # // mettre la donnees dans le file d'attente (+horodatage)
-            data_tuple = (msg.timestamp, (x, y, z))
-
+            data_tuple = (
+                stream_state['timestamp'], 
+                stream_state['temp_accel'], 
+                stream_state['temp_gyro']
+            )
+            
             stream_state['queue'].append(data_tuple)
-        
-        except Exception as e:
-            print("Oh no, cannot unpack")
-        
-        # // reset accumulator :p
-        stream_state['accumulator'] -= hz
+            
+            # // reset accumulator :p
+            stream_state['accumulator'] -= hz
+
+        # // clear the temporary slots to wait for the next pair from the bus
+        stream_state['temp_accel'] = None
+        stream_state['temp_gyro'] = None
 
 def main():
     print("exo telemetry, i choose you")
