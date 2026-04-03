@@ -25,8 +25,6 @@ can_streams = {
     # add rest
 }
 
-bus = can.Bus(interface='socketcan', channel='can1')
-
 print("buffering joint data...")
 
 def process_msg(msg: can.Message):
@@ -56,5 +54,27 @@ def process_msg(msg: can.Message):
         except Exception as e:
             print("Oh no, cannot unpack")
         
-        # // reset accumulator
+        # // reset accumulator :p
         stream_state['accumulator'] -= hz
+
+def main():
+    print("exo telemetry, i choose you")
+
+    try:
+        bus = can.interface.Bus(channel='can1', interface='socketcan')
+
+        for msg in bus:
+            process_msg(msg)
+
+    except can.CanError as e:
+        print(f"CAN error: {e}")
+    except KeyboardInterrupt:
+        print("you stopped it")
+    finally:
+        # // this might actually remove that annoying wall of
+        # // text we get when we CTRL + C the python file lol
+        if 'bus' in locals():
+            bus.shutdown()
+
+if __name__ == "__main__":
+    main()
