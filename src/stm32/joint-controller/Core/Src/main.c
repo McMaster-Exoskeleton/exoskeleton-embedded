@@ -373,7 +373,7 @@ void CAN_Send_IMU_Data(void)
 
   int16_t raw_ax, raw_ay, raw_az;
   int16_t raw_gx, raw_gy, raw_gz;
-  static uint8_t seq_counter = 0;
+  // static uint8_t seq_counter = 0;
 
   HAL_NVIC_DisableIRQ(DMA1_Stream1_IRQn);
 
@@ -386,27 +386,28 @@ void CAN_Send_IMU_Data(void)
   TxHeader.StdId = 0x123;
   TxHeader.IDE = CAN_ID_STD;
   TxHeader.RTR = CAN_RTR_DATA;
-  TxHeader.DLC = 7;
+  TxHeader.DLC = 6;
 
-  TxData[0] = seq_counter;
+ // TxData[0] = seq_counter;
 
   // Pack X
-  TxData[1] = raw_ax & 0xFF;
-  TxData[2] = (raw_ax >> 8) & 0xFF;
+  TxData[0] = raw_ax & 0xFF;
+  TxData[1] = (raw_ax >> 8) & 0xFF;
 
   // Pack Y
-  TxData[3] = raw_ay & 0xFF;
-  TxData[4] = (raw_ay >> 8) & 0xFF;
+  TxData[2] = raw_ay & 0xFF;
+  TxData[3] = (raw_ay >> 8) & 0xFF;
 
   // Pack Z
-  TxData[5] = raw_az & 0xFF;
-  TxData[6] = (raw_az >> 8) & 0xFF;
+  TxData[4] = raw_az & 0xFF;
+  TxData[5] = (raw_az >> 8) & 0xFF;
 
   // Add message to the TX Mailbox
   if (HAL_CAN_GetTxMailboxesFreeLevel(&hcan1) > 0)
   {
     HAL_StatusTypeDef ret = HAL_CAN_AddTxMessage(&hcan1, &TxHeader, TxData, &TxMailbox);
 
+    
     if (ret != HAL_OK)
       HAL_GPIO_TogglePin(LD2_GPIO_Port, LD2_Pin); // blink = TX failed
   }
@@ -419,17 +420,17 @@ void CAN_Send_IMU_Data(void)
   TxHeader.StdId = 0x124;
   TxHeader.DLC = 6;
 
-  TxData[0] = seq_counter;
+ // TxData[0] = seq_counter;
 
   // Packing: Little to Big Endian
-  TxData[1] = raw_gx & 0xFF;
-  TxData[2] = (raw_gx >> 8) & 0xFF;
+  TxData[0] = raw_gx & 0xFF;
+  TxData[1] = (raw_gx >> 8) & 0xFF;
 
-  TxData[3] = raw_gy & 0xFF;
-  TxData[4] = (raw_gy >> 8) & 0xFF;
+  TxData[2] = raw_gy & 0xFF;
+  TxData[3] = (raw_gy >> 8) & 0xFF;
 
-  TxData[5] = raw_gz & 0xFF;
-  TxData[6] = (raw_gz >> 8) & 0xFF;
+  TxData[4] = raw_gz & 0xFF;
+  TxData[5] = (raw_gz >> 8) & 0xFF;
 
   if (HAL_CAN_GetTxMailboxesFreeLevel(&hcan1) > 0)
   {
@@ -439,13 +440,16 @@ void CAN_Send_IMU_Data(void)
       HAL_GPIO_TogglePin(LD2_GPIO_Port, LD2_Pin);
   }
 
+  /*
   // Toggle the onboard Green LED (PA5) every can message send
   if (seq_counter == 0)
   {
     HAL_GPIO_TogglePin(LD2_GPIO_Port, LD2_Pin);
   }
+  
 
   seq_counter++;
+  */
 }
 
 /**
