@@ -371,15 +371,24 @@ void CAN_Send_IMU_Data(void)
   if (imu->state != SENSOR_STATE_CONNECTED)
     return;
 
+  // Guarantee that both frames can be queued before beginning TX
+  if (HAL_CAN_GetTxMailboxesFreeLevel(&hcan1) < 2)
+    return;
+
+  static uint8_t seq_counter = 0;
   int16_t raw_ax, raw_ay, raw_az;
   int16_t raw_gx, raw_gy, raw_gz;
-  static uint8_t seq_counter = 0;
 
+  // Disable DMA IRQ temporarily while reading all data from IMU
   HAL_NVIC_DisableIRQ(DMA1_Stream1_IRQn);
 
   raw_ax = imu->accel.x;
   raw_ay = imu->accel.y;
   raw_az = imu->accel.z;
+
+  raw_gx = imu->gyro.x;
+  raw_gy = imu->gyro.y;
+  raw_gz = imu->gyro.z;
 
   HAL_NVIC_EnableIRQ(DMA1_Stream1_IRQn);
 
@@ -402,22 +411,14 @@ void CAN_Send_IMU_Data(void)
   TxData[5] = raw_az & 0xFF;
   TxData[6] = (raw_az >> 8) & 0xFF;
 
-  // Add message to the TX Mailbox
-  if (HAL_CAN_GetTxMailboxesFreeLevel(&hcan1) > 0)
-  {
-    HAL_StatusTypeDef ret = HAL_CAN_AddTxMessage(&hcan1, &TxHeader, TxData, &TxMailbox);
+  HAL_StatusTypeDef ret = HAL_CAN_AddTxMessage(&hcan1, &TxHeader, TxData, &TxMailbox);
 
-    if (ret != HAL_OK)
-      HAL_GPIO_TogglePin(LD2_GPIO_Port, LD2_Pin); // blink = TX failed
-  }
-
-  raw_gx = imu->gyro.x;
-  raw_gy = imu->gyro.y;
-  raw_gz = imu->gyro.z;
+  if (ret != HAL_OK)
+    HAL_GPIO_TogglePin(LD2_GPIO_Port, LD2_Pin); // blink = TX failed
 
   // Gryoscope TX Frame
   TxHeader.StdId = 0x124;
-  TxHeader.DLC = 6;
+  TxHeader.DLC = 7;
 
   TxData[0] = seq_counter;
 
@@ -431,13 +432,10 @@ void CAN_Send_IMU_Data(void)
   TxData[5] = raw_gz & 0xFF;
   TxData[6] = (raw_gz >> 8) & 0xFF;
 
-  if (HAL_CAN_GetTxMailboxesFreeLevel(&hcan1) > 0)
-  {
-    HAL_StatusTypeDef ret = HAL_CAN_AddTxMessage(&hcan1, &TxHeader, TxData, &TxMailbox);
+  HAL_StatusTypeDef ret = HAL_CAN_AddTxMessage(&hcan1, &TxHeader, TxData, &TxMailbox);
 
-    if (ret != HAL_OK)
-      HAL_GPIO_TogglePin(LD2_GPIO_Port, LD2_Pin);
-  }
+  if (ret != HAL_OK)
+    HAL_GPIO_TogglePin(LD2_GPIO_Port, LD2_Pin);
 
   // Toggle the onboard Green LED (PA5) every can message send
   if (seq_counter == 0)
