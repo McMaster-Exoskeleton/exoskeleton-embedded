@@ -26,9 +26,7 @@ imus = {
         'accumulator': 0,
         'queue': deque(maxlen=target),
         'temp_accel': None,
-       #'temp_accel_seq': None,
         'temp_gyro': None,
-       # 'temp_gyro_seq': None,
         'timestamp': 0.0
         # // encoder reading to be added?
     }
@@ -60,14 +58,12 @@ def process_msg(msg: can.Message):
         x_raw, y_raw, z_raw = struct.unpack('<hhh', msg.data[0:6])
         val = (x_raw / 100.0, y_raw / 100.0, z_raw / 100.0)
 
+        # // id's are contigous
         if sensor_type == "accel":
             stream_state['temp_accel'] = val
-            #stream_state['temp_accel_seq'] = seq
             stream_state['timestamp'] = msg.timestamp * 1000 # // s -> ms
         else:
             stream_state['temp_gyro'] = val
-            #stream_state['temp_gyro_seq'] = seq
-            # // the id before this one provided the timestamp (id's are contiguous)
     
     except Exception as e:
         print(f"noo, cannot unpack! {e}")
@@ -76,16 +72,6 @@ def process_msg(msg: can.Message):
 
     # // its crucial that the contiguous data (accel + gyro) is a snychronized pair
     if stream_state['temp_accel'] is not None and stream_state['temp_gyro'] is not None:
-        # Validate seq counter pairing and drop mismatched pairs
-        '''
-        if stream_state['temp_accel_seq'] != stream_state['temp_gyro_seq']:
-            print(f"[{imu_key}] seq mismatch: accel={stream_state['temp_accel_seq']} gyro={stream_state['temp_gyro_seq']}. dropped")
-
-            stream_state['temp_accel'] = None
-            stream_state['temp_gyro']  = None
-            
-            return
-        '''
 
         # // accumulate :p
         stream_state['accumulator'] += target
@@ -108,8 +94,6 @@ def process_msg(msg: can.Message):
         # // clear the temporary slots to wait for the next pair from the bus
         stream_state['temp_accel'] = None
         stream_state['temp_gyro'] = None
-       # stream_state['temp_accel_seq'] = None
-       # stream_state['temp_gyro_seq'] = None
     
 
 # // hardware thread to be running in background
@@ -121,8 +105,7 @@ def can_listener():
     except can.CanError as e:
         print(f"CAN error: {e}")
     finally:
-        # // this might actually remove that annoying wall of
-        # // text we get when we CTRL + C the python file lol
+        # // gets rid of annoying wall of text
         if 'bus' in locals():
             bus.shutdown()
 
