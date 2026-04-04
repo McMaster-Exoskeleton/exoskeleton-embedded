@@ -1,6 +1,24 @@
 import can
 import struct
 
+# CAN ID layout helpers (matches STM32 CAN_BUILD_ID in can_common.h)
+CAN_MSG_IMU_ACCEL = 0x3
+CAN_MSG_IMU_GYRO = 0x4
+CAN_NODE_PI = 0
+
+
+def can_get_msg_type(can_id: int) -> int:
+    return (can_id >> 7) & 0x0F
+
+
+def can_get_src_node(can_id: int) -> int:
+    return (can_id >> 4) & 0x07
+
+
+def can_get_dest(can_id: int) -> int:
+    return can_id & 0x0F
+
+
 # Initialize bus
 bus = can.interface.Bus(channel="can1", interface="socketcan")
 
@@ -16,20 +34,25 @@ telemetry = {
 }
 
 for msg in bus:
-    if msg.arbitration_id == 0x123:
-        # data[0:6] contains data triplet packed as 16-bit signed integers (Big Endian)
-        # '>hhh' tells Python to unpack 3 signed shorts
+    msg_type = can_get_msg_type(msg.arbitration_id)
+    src_node = can_get_src_node(msg.arbitration_id)
+    dest = can_get_dest(msg.arbitration_id)
+
+    if dest != CAN_NODE_PI:
+        continue
+
+    if msg_type == CAN_MSG_IMU_ACCEL:
         try:
             ax_raw, ay_raw, az_raw = struct.unpack('<hhh', msg.data[0:6])
 
-            # Divide by 100 because we multiplied by 100 in main.c
+            # Divide by 100 because STM32 sends int16 values scaled by 100
             telemetry["ax"] = ax_raw / 100.0
             telemetry["ay"] = ay_raw / 100.0
             telemetry["az"] = az_raw / 100.0
         except Exception as e:
             print(f"Error in retrieving acceleration data: {e}")
 
-    elif msg.arbitration_id == 0x124:
+    elif msg_type == CAN_MSG_IMU_GYRO:
         try:
             gx_raw, gy_raw, gz_raw = struct.unpack('<hhh', msg.data[0:6])
 
@@ -38,6 +61,9 @@ for msg in bus:
             telemetry["gz"] = gz_raw / 100.0
         except Exception as e:
             print(f"Error in retrieving gyroscope data: {e}")
+    else:
+        continue
 
+    print(f"Source Node: {src_node} | CAN ID: 0x{msg.arbitration_id:03X}")
     print(f"Accel -> X: {telemetry['ax']:6.2f} | Y: {telemetry['ay']:6.2f} | Z: {telemetry['az']:6.2f} m/s^2")
     print(f"Gyro -> X: {telemetry['gx']:6.2f} | Y: {telemetry['gy']:6.2f} | Z: {telemetry['gz']:6.2f} deg/s")

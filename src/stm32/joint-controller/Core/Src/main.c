@@ -25,6 +25,8 @@
 #include <stdio.h>
 #include <string.h>
 #include "imu_buffer.h"
+#include "can_common.h"
+#include "can_imu.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -34,6 +36,7 @@
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
+#define MY_NODE_ID   CAN_NODE_LEFT_HIP   // change per board
 
 /* USER CODE END PD */
 
@@ -51,13 +54,9 @@ DMA_HandleTypeDef hdma_i2c3_rx;
 UART_HandleTypeDef huart2;
 
 /* USER CODE BEGIN PV */
-CAN_TxHeaderTypeDef TxHeader;
-uint8_t TxData[8];
-uint32_t TxMailbox;
-
-uint8_t rx_data[1];
-uint8_t rx_buffer[100];
-uint8_t rx_index = 0;
+uint8_t          rx_data[1];
+uint8_t          rx_buffer[100];
+uint8_t          rx_index = 0;
 /* READALL streams one line at a time, so tx_buffer only needs to hold one
    formatted reading (~60 chars). 256 bytes gives comfortable margin. */
 uint8_t tx_buffer[256];
@@ -72,6 +71,8 @@ static void MX_USART2_UART_Init(void);
 static void MX_CAN1_Init(void);
 static void MX_I2C3_Init(void);
 /* USER CODE BEGIN PFP */
+
+
 static void process_command(void);
 void CAN_Send_IMU_Data(void);
 /* USER CODE END PFP */
@@ -98,14 +99,12 @@ int main(void)
   HAL_Init();
 
   /* USER CODE BEGIN Init */
-
   /* USER CODE END Init */
 
   /* Configure the system clock */
   SystemClock_Config();
 
   /* USER CODE BEGIN SysInit */
-
   /* USER CODE END SysInit */
 
   /* Initialize all configured peripherals */
@@ -114,8 +113,12 @@ int main(void)
   MX_USART2_UART_Init();
   MX_CAN1_Init();
   MX_I2C3_Init();
+
   /* USER CODE BEGIN 2 */
-  HAL_CAN_Start(&hcan1);
+  if (!can_common_init(&hcan1, MY_NODE_ID))
+  {
+    Error_Handler();
+  }
   lsm6ds3tr_init_driver(&hi2c3);
   HAL_UART_Receive_IT(&huart2, rx_data, 1);
 
@@ -126,11 +129,9 @@ int main(void)
   /* USER CODE END 2 */
 
   /* Infinite loop */
-  /* USER CODE BEGIN WHILE */
+
   while (1)
   {
-    /* USER CODE END WHILE */
-
     /* USER CODE BEGIN 3 */
 
     if (cmd_ready)
@@ -232,7 +233,7 @@ static void MX_CAN1_Init(void)
     Error_Handler();
   }
   /* USER CODE BEGIN CAN1_Init 2 */
-
+  
   /* USER CODE END CAN1_Init 2 */
 }
 
@@ -358,11 +359,11 @@ static void MX_GPIO_Init(void)
 /* USER CODE BEGIN 4 */
 
 /**
- * @brief Encode and transmit the latest accel reading on CAN ID 0x123.
+ * @brief Transmit latest IMU accel + gyro frames to Pi via CAN
  *
- * Packs AX, AY, AZ as litte-endian signed 16-bit integers scaled by 100
- * (i.e. value_int16 = meters_per_sec_sq * 100).  Called every loop cycle;
- * skips silently if the IMU is not connected or CAN mailboxes are full.
+ * Frame IDs are built by CAN_BUILD_ID() inside can_send_imu_accel() and
+ * can_send_imu_gyro(). Payloads are little-endian int16 values scaled by 100.
+ * Called every loop cycle; returns immediately if IMU is not connected.
  */
 void CAN_Send_IMU_Data(void)
 {
@@ -371,82 +372,20 @@ void CAN_Send_IMU_Data(void)
   if (imu->state != SENSOR_STATE_CONNECTED)
     return;
 
-  // Guarantee that both frames can be queued before beginning TX
-  if (HAL_CAN_GetTxMailboxesFreeLevel(&hcan1) < 2)
-    return;
+  int accel_ok = can_send_imu_accel(MY_NODE_ID,
+                                    imu->accel.filt_x,
+                                    imu->accel.filt_y,
+                                    imu->accel.filt_z);
 
-  static uint8_t seq_counter = 0;
-  int16_t raw_ax, raw_ay, raw_az;
-  int16_t raw_gx, raw_gy, raw_gz;
+  int gyro_ok = can_send_imu_gyro(MY_NODE_ID,
+                                  imu->gyro.filt_x,
+                                  imu->gyro.filt_y,
+                                  imu->gyro.filt_z);
 
-  // Disable DMA IRQ temporarily while reading all data from IMU
-  HAL_NVIC_DisableIRQ(DMA1_Stream1_IRQn);
-
-  raw_ax = (int16_t)(imu->accel.filt_x * 100.0f);
-  raw_ay = (int16_t)(imu->accel.filt_y * 100.0f);
-  raw_az = (int16_t)(imu->accel.filt_z * 100.0f);
-
-  raw_gx = imu->gyro.x;
-  raw_gy = imu->gyro.y;
-  raw_gz = imu->gyro.z;
-
-  HAL_NVIC_EnableIRQ(DMA1_Stream1_IRQn);
-
-  // Accelerometer TX Frame
-  // ACCEL_HIP_L: 0x123, ACCEL_HIP_R: 0x125, 
-  // ACCEL_KNEE_L: 0x127, ACCEL_KNEE_R: 0x129
-  TxHeader.StdId = ACCEL_HIP_R;
-  TxHeader.IDE = CAN_ID_STD;
-  TxHeader.RTR = CAN_RTR_DATA;
-  TxHeader.DLC = 6;
-
-  // Pack X
-  TxData[0] = raw_ax & 0xFF;
-  TxData[1] = (raw_ax >> 8) & 0xFF;
-
-  // Pack Y
-  TxData[2] = raw_ay & 0xFF;
-  TxData[3] = (raw_ay >> 8) & 0xFF;
-
-  // Pack Z
-  TxData[4] = raw_az & 0xFF;
-  TxData[5] = (raw_az >> 8) & 0xFF;
-
-  // Add message to the TX Mailbox
-  if (HAL_CAN_GetTxMailboxesFreeLevel(&hcan1) > 0)
+  if (!accel_ok || !gyro_ok)
   {
-    HAL_StatusTypeDef ret = HAL_CAN_AddTxMessage(&hcan1, &TxHeader, TxData, &TxMailbox);
-
-    
-    if (ret != HAL_OK)
-      HAL_GPIO_TogglePin(LD2_GPIO_Port, LD2_Pin); // blink = TX failed
+    HAL_GPIO_TogglePin(LD2_GPIO_Port, LD2_Pin); // Transmission failed
   }
-
-  raw_gx = (int16_t)(imu->gyro.filt_x * 100.0f);
-  raw_gy = (int16_t)(imu->gyro.filt_y * 100.0f);
-  raw_gz = (int16_t)(imu->gyro.filt_z * 100.0f);
-
-  // Gryoscope TX Frame
-  // GYRO_HIP_L: 0x124, GYRO_HIP_R: 0x126,
-  //GYRO_KNEE_L: 0x128, GYRO_KNEE_R: 0x130
-  TxHeader.StdId = GYRO_HIP_R;
-  TxHeader.DLC = 6;
-
-  // Packing: Little to Big Endian
-  TxData[0] = raw_gx & 0xFF;
-  TxData[1] = (raw_gx >> 8) & 0xFF;
-
-  TxData[2] = raw_gy & 0xFF;
-  TxData[3] = (raw_gy >> 8) & 0xFF;
-
-  TxData[4] = raw_gz & 0xFF;
-  TxData[5] = (raw_gz >> 8) & 0xFF;
-
-  HAL_StatusTypeDef ret = HAL_CAN_AddTxMessage(&hcan1, &TxHeader, TxData, &TxMailbox);
-
-  if (ret != HAL_OK)
-    HAL_GPIO_TogglePin(LD2_GPIO_Port, LD2_Pin);
-
 }
 
 /**
@@ -624,8 +563,7 @@ void Error_Handler(void)
   /* User can add his own implementation to report the HAL error return state */
   __disable_irq();
   while (1)
-  {
-  }
+  { HAL_GPIO_TogglePin( LD2_GPIO_Port, LD2_Pin); HAL_Delay(200); }
   /* USER CODE END Error_Handler_Debug */
 }
 #ifdef USE_FULL_ASSERT
