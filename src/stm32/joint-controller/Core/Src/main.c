@@ -360,7 +360,7 @@ static void MX_GPIO_Init(void)
 /**
  * @brief Encode and transmit the latest accel reading on CAN ID 0x123.
  *
- * Packs AX, AY, AZ as big-endian signed 16-bit integers scaled by 100
+ * Packs AX, AY, AZ as litte-endian signed 16-bit integers scaled by 100
  * (i.e. value_int16 = meters_per_sec_sq * 100).  Called every loop cycle;
  * skips silently if the IMU is not connected or CAN mailboxes are full.
  */
@@ -373,63 +373,59 @@ void CAN_Send_IMU_Data(void)
 
   int16_t raw_ax, raw_ay, raw_az;
   int16_t raw_gx, raw_gy, raw_gz;
-  static uint8_t seq_counter = 0;
 
   HAL_NVIC_DisableIRQ(DMA1_Stream1_IRQn);
 
-  raw_ax = imu->accel.x;
-  raw_ay = imu->accel.y;
-  raw_az = imu->accel.z;
+  raw_ax = (int16_t)(imu->accel.filt_x * 100.0f);
+  raw_ay = (int16_t)(imu->accel.filt_y * 100.0f);
+  raw_az = (int16_t)(imu->accel.filt_z * 100.0f);
 
   HAL_NVIC_EnableIRQ(DMA1_Stream1_IRQn);
 
   TxHeader.StdId = 0x123;
   TxHeader.IDE = CAN_ID_STD;
   TxHeader.RTR = CAN_RTR_DATA;
-  TxHeader.DLC = 7;
-
-  TxData[0] = seq_counter;
+  TxHeader.DLC = 6;
 
   // Pack X
-  TxData[1] = raw_ax & 0xFF;
-  TxData[2] = (raw_ax >> 8) & 0xFF;
+  TxData[0] = raw_ax & 0xFF;
+  TxData[1] = (raw_ax >> 8) & 0xFF;
 
   // Pack Y
-  TxData[3] = raw_ay & 0xFF;
-  TxData[4] = (raw_ay >> 8) & 0xFF;
+  TxData[2] = raw_ay & 0xFF;
+  TxData[3] = (raw_ay >> 8) & 0xFF;
 
   // Pack Z
-  TxData[5] = raw_az & 0xFF;
-  TxData[6] = (raw_az >> 8) & 0xFF;
+  TxData[4] = raw_az & 0xFF;
+  TxData[5] = (raw_az >> 8) & 0xFF;
 
   // Add message to the TX Mailbox
   if (HAL_CAN_GetTxMailboxesFreeLevel(&hcan1) > 0)
   {
     HAL_StatusTypeDef ret = HAL_CAN_AddTxMessage(&hcan1, &TxHeader, TxData, &TxMailbox);
 
+    
     if (ret != HAL_OK)
       HAL_GPIO_TogglePin(LD2_GPIO_Port, LD2_Pin); // blink = TX failed
   }
 
-  raw_gx = imu->gyro.x;
-  raw_gy = imu->gyro.y;
-  raw_gz = imu->gyro.z;
+  raw_gx = (int16_t)(imu->gyro.filt_x * 100.0f);
+  raw_gy = (int16_t)(imu->gyro.filt_y * 100.0f);
+  raw_gz = (int16_t)(imu->gyro.filt_z * 100.0f);
 
   // Gryoscope TX Frame
   TxHeader.StdId = 0x124;
   TxHeader.DLC = 6;
 
-  TxData[0] = seq_counter;
-
   // Packing: Little to Big Endian
-  TxData[1] = raw_gx & 0xFF;
-  TxData[2] = (raw_gx >> 8) & 0xFF;
+  TxData[0] = raw_gx & 0xFF;
+  TxData[1] = (raw_gx >> 8) & 0xFF;
 
-  TxData[3] = raw_gy & 0xFF;
-  TxData[4] = (raw_gy >> 8) & 0xFF;
+  TxData[2] = raw_gy & 0xFF;
+  TxData[3] = (raw_gy >> 8) & 0xFF;
 
-  TxData[5] = raw_gz & 0xFF;
-  TxData[6] = (raw_gz >> 8) & 0xFF;
+  TxData[4] = raw_gz & 0xFF;
+  TxData[5] = (raw_gz >> 8) & 0xFF;
 
   if (HAL_CAN_GetTxMailboxesFreeLevel(&hcan1) > 0)
   {
@@ -439,13 +435,6 @@ void CAN_Send_IMU_Data(void)
       HAL_GPIO_TogglePin(LD2_GPIO_Port, LD2_Pin);
   }
 
-  // Toggle the onboard Green LED (PA5) every can message send
-  if (seq_counter == 0)
-  {
-    HAL_GPIO_TogglePin(LD2_GPIO_Port, LD2_Pin);
-  }
-
-  seq_counter++;
 }
 
 /**
