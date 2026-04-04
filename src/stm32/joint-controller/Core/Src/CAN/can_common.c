@@ -91,6 +91,7 @@ int can_common_init(CAN_HandleTypeDef *hcan, uint8_t my_node_id) {
     if (HAL_CAN_ConfigFilter(hcan, &f) != HAL_OK) return 0;
 
     /* Start CAN peripheral */
+    HAL_CAN_Stop(hcan);
     if (HAL_CAN_Start(hcan) != HAL_OK) return 0;
 
     /* Enable NVIC for both FIFOs */
@@ -153,7 +154,10 @@ int can_send_ext(uint32_t ext_id, const uint8_t *data, uint8_t dlc) {
 /* ── Recv ── */
 
 int can_recv(CanFrame *out) {
-    return rb_pop(&g_rxq, out);
+    __disable_irq();
+    int ok = rb_pop(&g_rxq, out);
+    __enable_irq();
+    return ok;
 }
 
 uint8_t can_get_my_node_id(void) {
@@ -194,4 +198,12 @@ void HAL_CAN_RxFifo0MsgPendingCallback(CAN_HandleTypeDef *hcan) {
 
 void HAL_CAN_RxFifo1MsgPendingCallback(CAN_HandleTypeDef *hcan) {
     can_rx_handler(hcan, CAN_RX_FIFO1);
+}
+
+void HAL_CAN_ErrorCallback(CAN_HandleTypeDef *hcan) {
+    if (HAL_CAN_GetError(hcan) & HAL_CAN_ERROR_BOF) {
+        HAL_CAN_Stop(hcan);
+        HAL_Delay(100);       // let the bus recover
+        HAL_CAN_Start(hcan);
+    }
 }
