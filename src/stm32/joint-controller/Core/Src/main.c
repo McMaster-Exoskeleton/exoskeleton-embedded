@@ -371,18 +371,31 @@ void CAN_Send_IMU_Data(void)
   if (imu->state != SENSOR_STATE_CONNECTED)
     return;
 
+  // Guarantee that both frames can be queued before beginning TX
+  if (HAL_CAN_GetTxMailboxesFreeLevel(&hcan1) < 2)
+    return;
+
+  static uint8_t seq_counter = 0;
   int16_t raw_ax, raw_ay, raw_az;
   int16_t raw_gx, raw_gy, raw_gz;
 
+  // Disable DMA IRQ temporarily while reading all data from IMU
   HAL_NVIC_DisableIRQ(DMA1_Stream1_IRQn);
 
   raw_ax = (int16_t)(imu->accel.filt_x * 100.0f);
   raw_ay = (int16_t)(imu->accel.filt_y * 100.0f);
   raw_az = (int16_t)(imu->accel.filt_z * 100.0f);
 
+  raw_gx = imu->gyro.x;
+  raw_gy = imu->gyro.y;
+  raw_gz = imu->gyro.z;
+
   HAL_NVIC_EnableIRQ(DMA1_Stream1_IRQn);
 
-  TxHeader.StdId = 0x123;
+  // Accelerometer TX Frame
+  // ACCEL_HIP_L: 0x123, ACCEL_HIP_R: 0x125, 
+  // ACCEL_KNEE_L: 0x127, ACCEL_KNEE_R: 0x129
+  TxHeader.StdId = ACCEL_HIP_R;
   TxHeader.IDE = CAN_ID_STD;
   TxHeader.RTR = CAN_RTR_DATA;
   TxHeader.DLC = 6;
@@ -414,7 +427,9 @@ void CAN_Send_IMU_Data(void)
   raw_gz = (int16_t)(imu->gyro.filt_z * 100.0f);
 
   // Gryoscope TX Frame
-  TxHeader.StdId = 0x124;
+  // GYRO_HIP_L: 0x124, GYRO_HIP_R: 0x126,
+  //GYRO_KNEE_L: 0x128, GYRO_KNEE_R: 0x130
+  TxHeader.StdId = GYRO_HIP_R;
   TxHeader.DLC = 6;
 
   // Packing: Little to Big Endian
@@ -427,13 +442,10 @@ void CAN_Send_IMU_Data(void)
   TxData[4] = raw_gz & 0xFF;
   TxData[5] = (raw_gz >> 8) & 0xFF;
 
-  if (HAL_CAN_GetTxMailboxesFreeLevel(&hcan1) > 0)
-  {
-    HAL_StatusTypeDef ret = HAL_CAN_AddTxMessage(&hcan1, &TxHeader, TxData, &TxMailbox);
+  HAL_StatusTypeDef ret = HAL_CAN_AddTxMessage(&hcan1, &TxHeader, TxData, &TxMailbox);
 
-    if (ret != HAL_OK)
-      HAL_GPIO_TogglePin(LD2_GPIO_Port, LD2_Pin);
-  }
+  if (ret != HAL_OK)
+    HAL_GPIO_TogglePin(LD2_GPIO_Port, LD2_Pin);
 
 }
 
@@ -517,7 +529,11 @@ static void process_command(void)
     }
     HAL_UART_Transmit(&huart2, tx_buffer, len, 200);
   }
-  else if (strcmp((char *)rx_buffer, "READALL") == 0)
+
+// COMMENTED OUT BECAUSE NOW THAT WE ARE USING BUFFER ON PI
+// MIGHT BRING BACK BUFFER IF NEEDED BY CONTROLS
+
+/*  else if (strcmp((char *)rx_buffer, "READALL") == 0)
   {
     // Stack-allocate the snapshot to keep it off the heap.
     // 100 * 24 bytes = 2400 bytes — requires _Min_Stack_Size >= 0x1000.
@@ -553,7 +569,7 @@ static void process_command(void)
         HAL_UART_Transmit(&huart2, tx_buffer, len, 200);
       }
     }
-  }
+  } */
   else if (strcmp((char *)rx_buffer, "STATUS") == 0)
   {
     lsm6ds3tr_check_connection();

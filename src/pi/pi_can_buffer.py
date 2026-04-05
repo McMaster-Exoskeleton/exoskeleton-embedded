@@ -8,21 +8,34 @@ hz = 500
 target = 187 # // request by dilly
 
 # format: IMU#_GYRO/ACCEL_ID
+# LEFT HIP
 imu1_a_id = 0x123
 imu1_g_id = 0x124
-''' for the future
+
+# RIGHT HIP
 imu2_a_id = 0x125
 imu2_g_id = 0x126
 
+''' for the future
+# LEFT KNEE
 imu3_a_id = 0x127
 imu3_g_id = 0x128
 
+# RIGHT KNEE
 imu4_a_id = 0x129
 imu4_g_id = 0x130
 '''
 
-imus = {
-    "imu1": {
+# // map CAN IDs to (imu_key, sensor_type) for cleaner lookup
+can_id_map = {
+    imu1_a_id: ("imu1", "accel"),
+    imu1_g_id: ("imu1", "gyro"),
+    imu2_a_id: ("imu2", "accel"),
+    imu2_g_id: ("imu2", "gyro"),
+}
+
+def make_imu_state():
+    return {
         'accumulator': 0,
         'queue': deque(maxlen=target),
         'temp_accel': None,
@@ -30,6 +43,10 @@ imus = {
         'timestamp': 0.0
         # // encoder reading to be added?
     }
+
+imus = {
+    "imu1": make_imu_state(),
+    "imu2": make_imu_state(),
     # // future IMUS, add below
 }
 
@@ -40,15 +57,12 @@ print("buffering joint data...")
 def process_msg(msg: can.Message):
     can_id = msg.arbitration_id
 
-    # // if the id is something like the power readings for the IMU, ignore
-    if can_id == imu1_a_id:
-        imu_key = "imu1"
-        sensor_type = "accel"
-    elif can_id == imu1_g_id:
-        imu_key = "imu1"
-        sensor_type = "gyro"
-    else:
+    # // lookup imu key and sensor type from the CAN ID map
+    lookup = can_id_map.get(can_id)
+    if lookup is None:
         return
+
+    imu_key, sensor_type = lookup
 
     # // access a specific imus data for appending
     stream_state = imus[imu_key]
@@ -95,7 +109,6 @@ def process_msg(msg: can.Message):
         stream_state['temp_accel'] = None
         stream_state['temp_gyro'] = None
     
-
 # // hardware thread to be running in background
 def can_listener():
     try:
@@ -109,13 +122,55 @@ def can_listener():
         if 'bus' in locals():
             bus.shutdown()
 
-# // for ML -> get data of any join
+# // for ML -> get data of any joint
 def get_imu_data(imu_key):
     if imu_key in imus:
         with queue_lock:
             return list(imus[imu_key]['queue'])
     
     return []
+
+def print_full_queue(imu_key):
+    data = get_imu_data(imu_key)
+
+    if len(data) == 0:
+        print(f"[{imu_key}] empty queue, wait a second")
+        return
+    
+    print(f"\n [{imu_key}] full queue snapshot ({len(data)}) samples")
+
+    for i, data_point in enumerate(data):
+        timestamp, accel, gyro = data_point
+        print(f"[{i+1:3}] Time: {timestamp:.4f} | "
+              f"Accel: {accel[0]:6.2f}, {accel[1]:6.2f}, {accel[2]:6.2f} | "
+              f"Gyro: {gyro[0]:6.2f}, {gyro[1]:6.2f}, {gyro[2]:6.2f}")
+        
+    print()
+
+def print_latest(imu_key):
+    data = get_imu_data(imu_key)
+
+    if len(data) == 0:
+        print(f"[{imu_key}] empty queue, wait a second")
+        return
+
+    latest_time, latest_accel, latest_gyro = data[-1]
+
+    print(f"\n [{imu_key}] snapshot taken")
+    print(f"total samples in queueueue: {len(data)}")
+    print(f"UNIX time (ms): {latest_time}")
+    print(f"accel (x,y,z): {latest_accel}")
+    print(f"gyro (x,y,z): {latest_gyro}")
+    
+    print()
+
+def print_help():
+    print("\n commands:")
+    print("  q1  - full queue for imu1")
+    print("  q2  - full queue for imu2")
+    print("  l1  - latest value for imu1")
+    print("  l2  - latest value for imu2")
+    print()
 
 def main():
     print("exo telemetry, i choose you")
@@ -127,39 +182,23 @@ def main():
     print("initially filling queues")
     sleep(1)
 
+    print_help()
+
     try:
         # // ML stuff here
         while True:
-            user_input = input("press ENTER to get current queue snapshot, press 'q' for full queue")
+            user_input = input("> ").strip().lower()
 
-            imu1_data = get_imu_data("imu1")
-
-            if len(imu1_data) == 0:
-                print("empty queue, wait a second")
-                continue
-            
-            # // full queue
-            if user_input.strip().lower() == 'q':
-                print(f"\n full queue snapshot ({len(imu1_data)}) samples")
-
-                for i, data_point in enumerate(imu1_data):
-                    timestamp, accel, gyro = data_point
-                    print(f"[{i+1:3}] Time: {timestamp:.4f} | "
-                          f"Accel: {accel[0]:6.2f}, {accel[1]:6.2f}, {accel[2]:6.2f} | "
-                          f"Gyro: {gyro[0]:6.2f}, {gyro[1]:6.2f}, {gyro[2]:6.2f}")
-                    
-                print()
-
-            else:          
-                latest_time, latest_accel, latest_gyro = imu1_data[-1]
-  
-                print(f"\n snapshot taken")
-                print(f"total samples in queueueue: {len(imu1_data)}")
-                print(f"UNIX time (ms): {latest_time}")
-                print(f"accel (x,y,z): {latest_accel}")
-                print(f"gyro (x,y,z): {latest_gyro}")
-                
-                print()
+            if user_input == 'q1':
+                print_full_queue("imu1")
+            elif user_input == 'q2':
+                print_full_queue("imu2")
+            elif user_input == 'l1':
+                print_latest("imu1")
+            elif user_input == 'l2':
+                print_latest("imu2")
+            else:
+                print("unknown command, type 'h' for help")
 
     except KeyboardInterrupt:
         print("\n stopping telemetry")
