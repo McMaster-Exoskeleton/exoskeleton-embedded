@@ -360,7 +360,7 @@ static void MX_GPIO_Init(void)
 /**
  * @brief Encode and transmit the latest accel reading on CAN ID 0x123.
  *
- * Packs AX, AY, AZ as big-endian signed 16-bit integers scaled by 100
+ * Packs AX, AY, AZ as litte-endian signed 16-bit integers scaled by 100
  * (i.e. value_int16 = meters_per_sec_sq * 100).  Called every loop cycle;
  * skips silently if the IMU is not connected or CAN mailboxes are full.
  */
@@ -382,9 +382,9 @@ void CAN_Send_IMU_Data(void)
   // Disable DMA IRQ temporarily while reading all data from IMU
   HAL_NVIC_DisableIRQ(DMA1_Stream1_IRQn);
 
-  raw_ax = imu->accel.x;
-  raw_ay = imu->accel.y;
-  raw_az = imu->accel.z;
+  raw_ax = (int16_t)(imu->accel.filt_x * 100.0f);
+  raw_ay = (int16_t)(imu->accel.filt_y * 100.0f);
+  raw_az = (int16_t)(imu->accel.filt_z * 100.0f);
 
   raw_gx = imu->gyro.x;
   raw_gy = imu->gyro.y;
@@ -400,8 +400,6 @@ void CAN_Send_IMU_Data(void)
   TxHeader.RTR = CAN_RTR_DATA;
   TxHeader.DLC = 6;
 
-  // TxData[0] = seq_counter;
-
   // Pack X
   TxData[0] = raw_ax & 0xFF;
   TxData[1] = (raw_ax >> 8) & 0xFF;
@@ -414,10 +412,19 @@ void CAN_Send_IMU_Data(void)
   TxData[4] = raw_az & 0xFF;
   TxData[5] = (raw_az >> 8) & 0xFF;
 
-  HAL_StatusTypeDef ret = HAL_CAN_AddTxMessage(&hcan1, &TxHeader, TxData, &TxMailbox);
+  // Add message to the TX Mailbox
+  if (HAL_CAN_GetTxMailboxesFreeLevel(&hcan1) > 0)
+  {
+    HAL_StatusTypeDef ret = HAL_CAN_AddTxMessage(&hcan1, &TxHeader, TxData, &TxMailbox);
 
-  if (ret != HAL_OK)
-    HAL_GPIO_TogglePin(LD2_GPIO_Port, LD2_Pin); // blink = TX failed
+    
+    if (ret != HAL_OK)
+      HAL_GPIO_TogglePin(LD2_GPIO_Port, LD2_Pin); // blink = TX failed
+  }
+
+  raw_gx = (int16_t)(imu->gyro.filt_x * 100.0f);
+  raw_gy = (int16_t)(imu->gyro.filt_y * 100.0f);
+  raw_gz = (int16_t)(imu->gyro.filt_z * 100.0f);
 
   // Gryoscope TX Frame
   // GYRO_HIP_L: 0x124, GYRO_HIP_R: 0x126,
@@ -440,13 +447,6 @@ void CAN_Send_IMU_Data(void)
   if (ret != HAL_OK)
     HAL_GPIO_TogglePin(LD2_GPIO_Port, LD2_Pin);
 
-  // Toggle the onboard Green LED (PA5) every can message send
-  if (seq_counter == 0)
-  {
-    HAL_GPIO_TogglePin(LD2_GPIO_Port, LD2_Pin);
-  }
-
-  seq_counter++;
 }
 
 /**
