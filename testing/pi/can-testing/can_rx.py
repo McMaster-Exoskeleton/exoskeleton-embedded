@@ -1,7 +1,7 @@
 import can
 import struct
 
-# CAN ID layout helpers (matches STM32 CAN_BUILD_ID in can_common.h)
+# CAN ID layout helpers
 CAN_MSG_IMU_ACCEL = 0x3
 CAN_MSG_IMU_GYRO = 0x4
 CAN_NODE_PI = 0

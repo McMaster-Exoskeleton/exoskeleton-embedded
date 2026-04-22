@@ -50,3 +50,11 @@
 **/*.list
 **/*.hex
 **/*.bin
+testing/stm32/can-api/.settings/language.settings.xml
+testing/stm32/can-api/.settings/language.settings.xml
+testing/stm32/imu-uart/.settings/language.settings.xml
+testing/stm32/motor-api-tests/.settings/language.settings.xml
+testing/stm32/nucleo-pi-can/.settings/language.settings.xml
+testing/stm32/sensor-testing/.settings/language.settings.xml
+testing/stm32/uart-serial-com/.settings/language.settings.xml
+src/stm32/joint-controller/.settings/language.settings.xml
