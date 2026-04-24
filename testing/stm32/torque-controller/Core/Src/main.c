@@ -45,7 +45,7 @@
  * Change MY_MOTOR_CAN_ID to match the VESC CAN ID configured on the
  * paired motor (default 104; assign unique IDs per motor).
  */
-#define MY_NODE_ID          CAN_NODE_RIGHT_HIP
+#define MY_NODE_ID          2
 #define MY_MOTOR_CAN_ID     105         /* 104 default */
 
 /*
@@ -150,7 +150,8 @@ int main(void)
   MX_CAN1_Init();
   /* USER CODE BEGIN 2 */
   if (can_common_init(&hcan1, MY_NODE_ID)) {
-    debug_printf("CAN OK node=%d\r\n", MY_NODE_ID);
+    can_set_motor_filter(MY_MOTOR_CAN_ID);
+    debug_printf("CAN OK node=%d motor=%d\r\n", MY_NODE_ID, MY_MOTOR_CAN_ID);
     for (int i = 0; i < 3; i++) {
       HAL_GPIO_TogglePin(LD2_GPIO_Port, LD2_Pin);
       HAL_Delay(150);
@@ -172,32 +173,27 @@ int main(void)
 
     /* USER CODE BEGIN 3 */
 
-    /* ── Poll CAN RX buffer ── */
+    /* ── Poll CAN RX buffer ──
+     * NO per-frame debug prints in this loop — at 3 nodes, motor feedback
+     * rate × UART bandwidth would stall the main loop and break the 50 ms
+     * refresh. Periodic status dump below carries the same info at 1 Hz.
+     */
     CanFrame rx_frame;
     while (can_recv(&rx_frame)) {
-      debug_printf("RX id=0x%03lX ext=%d dlc=%d\r\n",
-                   rx_frame.id, rx_frame.is_extended, rx_frame.dlc);
 
       if (rx_frame.is_extended) {
-        /* Motor feedback frame */
         ext_rx_count++;
         motor_receive(&motor_status, rx_frame.data);
-        debug_printf("  MOTOR pos=%.1f spd=%.0f cur=%.2f temp=%d err=%d (%s)\r\n",
-                     motor_status.position, motor_status.speed,
-                     motor_status.current, motor_status.temperature,
-                     motor_status.error,
-                     motor_error_to_string(motor_status.error));
 
       } else {
         uint8_t msg_type = can_get_msg_type((uint16_t)rx_frame.id);
-        debug_printf("  type=%d\r\n", msg_type);
 
         if (msg_type == CAN_MSG_ESTOP) {
-          debug_print("  ESTOP\r\n");
           active_current = 0.0f;
           motor_active = 0;
           estop_active = 1;
           comm_can_set_current(MY_MOTOR_CAN_ID, 0.0f);
+          debug_print("ESTOP\r\n");
 
         } else if (msg_type == CAN_MSG_TORQUE_CMD && !estop_active) {
           float torque_nm;
@@ -205,14 +201,12 @@ int main(void)
             float current = torque_nm / KT_EFFECTIVE;
             active_current = clampf(current, -CURRENT_LIMIT, CURRENT_LIMIT);
             motor_active = 1;
-            debug_printf("  torque=%.3f Nm -> current=%.3f A\r\n",
-                         torque_nm, active_current);
 
             HAL_GPIO_TogglePin(LD2_GPIO_Port, LD2_Pin);
             comm_can_set_current(MY_MOTOR_CAN_ID, active_current);
             last_refresh_tick = HAL_GetTick();
-          } else {
-            debug_print("  parse FAIL\r\n");
+            debug_printf("CMD torque=%.3f Nm -> current=%.3f A\r\n",
+                         torque_nm, active_current);
           }
         }
       }

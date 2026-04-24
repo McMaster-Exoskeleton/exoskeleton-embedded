@@ -160,6 +160,30 @@ uint8_t can_get_my_node_id(void) {
     return g_my_node_id;
 }
 
+int can_set_motor_filter(uint8_t motor_id) {
+    if (!g_hcan) return 0;
+
+    /* Extended filter in 32-bit mode:
+     *   FR = (ExtID << 3) | (IDE << 2) | (RTR << 1)
+     * Match bits [7:0] of ExtID = motor_id, and require IDE = 1.
+     *   FilterID   = (motor_id << 3) | 0x04
+     *   FilterMask = (0xFF << 3) | 0x04  = 0x7FC
+     */
+    CAN_FilterTypeDef f;
+    memset(&f, 0, sizeof(f));
+    f.FilterBank           = 2;
+    f.FilterMode           = CAN_FILTERMODE_IDMASK;
+    f.FilterScale          = CAN_FILTERSCALE_32BIT;
+    f.FilterIdHigh         = 0x0000;
+    f.FilterIdLow          = ((uint16_t)motor_id << 3) | 0x0004;
+    f.FilterMaskIdHigh     = 0x0000;
+    f.FilterMaskIdLow      = 0x07FC;
+    f.FilterFIFOAssignment = CAN_FILTER_FIFO1;
+    f.FilterActivation     = ENABLE;
+    f.SlaveStartFilterBank = 14;
+    return (HAL_CAN_ConfigFilter(g_hcan, &f) == HAL_OK);
+}
+
 /* ── ISR Callbacks ── */
 
 static void can_rx_handler(CAN_HandleTypeDef *hcan, uint32_t fifo) {
