@@ -55,7 +55,7 @@
 #define AK70_9_GEAR_RATIO   9.0f
 #define KT_EFFECTIVE        (AK70_9_KT * AK70_9_GEAR_RATIO)  /* 1.431 Nm/A */
 
-#define CURRENT_REFRESH_MS  50    /* Re-send interval to prevent VESC timeout */
+#define CURRENT_REFRESH_MS  50    /* Re-send interval to prevent AK70-9 timeout */
 #define CURRENT_LIMIT       5.0f  //Amps
 
 /* USER CODE END PD */
@@ -327,9 +327,9 @@ static void MX_CAN1_Init(void)
   hcan1.Init.TimeSeg1 = CAN_BS1_10TQ;
   hcan1.Init.TimeSeg2 = CAN_BS2_3TQ;
   hcan1.Init.TimeTriggeredMode = DISABLE;
-  hcan1.Init.AutoBusOff = DISABLE;
+  hcan1.Init.AutoBusOff = ENABLE;
   hcan1.Init.AutoWakeUp = DISABLE;
-  hcan1.Init.AutoRetransmission = DISABLE;
+  hcan1.Init.AutoRetransmission = ENABLE;
   hcan1.Init.ReceiveFifoLocked = DISABLE;
   hcan1.Init.TransmitFifoPriority = DISABLE;
   if (HAL_CAN_Init(&hcan1) != HAL_OK)
@@ -515,6 +515,12 @@ static void CAN_Poll_Incoming(void)
                  g_motor_status.current,  g_motor_status.temperature,
                  g_motor_status.error,
                  motor_error_to_string(g_motor_status.error));
+    // If the motor driver is reporting a fault, zero it immediately.
+    if (g_motor_status.error != MOTOR_ERROR_NONE && !g_estop_active){
+            debug_printf("FAULT: %s — zeroing motor\r\n",
+                         motor_error_to_string(g_motor_status.error));
+            handle_estop(g_motor_status.error);
+        }
     return;
   }
 
