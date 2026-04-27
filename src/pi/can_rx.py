@@ -19,51 +19,73 @@ def can_get_dest(can_id: int) -> int:
     return can_id & 0x0F
 
 
-# Initialize bus
-bus = can.interface.Bus(channel="can1", interface="socketcan")
+def main() -> int:
+    try:
+        bus = can.interface.Bus(channel="can1", interface="socketcan")
+    except Exception as err:
+        print(f"Failed to initialize CAN bus on can1: {err}")
+        return 1
 
-print("Exoskeleton Telemetry Started...")
+    print("Exoskeleton telemetry started...")
 
-telemetry = {
-    "ax": 0.0, 
-    "ay": 0.0, 
-    "az": 0.0, 
-    "gx": 0.0, 
-    "gy": 0.0, 
-    "gz": 0.0
-}
+    telemetry = {
+        "ax": 0.0,
+        "ay": 0.0,
+        "az": 0.0,
+        "gx": 0.0,
+        "gy": 0.0,
+        "gz": 0.0,
+    }
 
-for msg in bus:
-    msg_type = can_get_msg_type(msg.arbitration_id)
-    src_node = can_get_src_node(msg.arbitration_id)
-    dest = can_get_dest(msg.arbitration_id)
+    for msg in bus:
+        msg_type = can_get_msg_type(msg.arbitration_id)
+        src_node = can_get_src_node(msg.arbitration_id)
+        dest = can_get_dest(msg.arbitration_id)
 
-    if dest != CAN_NODE_PI:
-        continue
+        if dest != CAN_NODE_PI:
+            continue
 
-    if msg_type == CAN_MSG_IMU_ACCEL:
-        try:
-            ax_raw, ay_raw, az_raw = struct.unpack('<hhh', msg.data[0:6])
+        if msg_type == CAN_MSG_IMU_ACCEL:
+            try:
+                ax_raw, ay_raw, az_raw = struct.unpack("<hhh", msg.data[0:6])
 
-            # Divide by 100 because STM32 sends int16 values scaled by 100
-            telemetry["ax"] = ax_raw / 100.0
-            telemetry["ay"] = ay_raw / 100.0
-            telemetry["az"] = az_raw / 100.0
-        except Exception as e:
-            print(f"Error in retrieving acceleration data: {e}")
+                # STM32 sends int16 values scaled by 100.
+                telemetry["ax"] = ax_raw / 100.0
+                telemetry["ay"] = ay_raw / 100.0
+                telemetry["az"] = az_raw / 100.0
+            except Exception as err:
+                print(f"Error retrieving acceleration data: {err}")
 
-    elif msg_type == CAN_MSG_IMU_GYRO:
-        try:
-            gx_raw, gy_raw, gz_raw = struct.unpack('<hhh', msg.data[0:6])
+        elif msg_type == CAN_MSG_IMU_GYRO:
+            try:
+                gx_raw, gy_raw, gz_raw = struct.unpack("<hhh", msg.data[0:6])
 
-            telemetry["gx"] = gx_raw / 100.0
-            telemetry["gy"] = gy_raw / 100.0
-            telemetry["gz"] = gz_raw / 100.0
-        except Exception as e:
-            print(f"Error in retrieving gyroscope data: {e}")
-    else:
-        continue
+                telemetry["gx"] = gx_raw / 100.0
+                telemetry["gy"] = gy_raw / 100.0
+                telemetry["gz"] = gz_raw / 100.0
+            except Exception as err:
+                print(f"Error retrieving gyroscope data: {err}")
+        else:
+            continue
 
-    print(f"Source Node: {src_node} | CAN ID: 0x{msg.arbitration_id:03X}")
-    print(f"Accel -> X: {telemetry['ax']:6.2f} | Y: {telemetry['ay']:6.2f} | Z: {telemetry['az']:6.2f} m/s^2")
-    print(f"Gyro -> X: {telemetry['gx']:6.2f} | Y: {telemetry['gy']:6.2f} | Z: {telemetry['gz']:6.2f} deg/s")
+        print(f"Source Node: {src_node} | CAN ID: 0x{msg.arbitration_id:03X}")
+        accel_line = (
+            "Accel -> "
+            f"X: {telemetry['ax']:6.2f} | "
+            f"Y: {telemetry['ay']:6.2f} | "
+            f"Z: {telemetry['az']:6.2f} m/s^2"
+        )
+        gyro_line = (
+            "Gyro -> "
+            f"X: {telemetry['gx']:6.2f} | "
+            f"Y: {telemetry['gy']:6.2f} | "
+            f"Z: {telemetry['gz']:6.2f} deg/s"
+        )
+        print(accel_line)
+        print(gyro_line)
+
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

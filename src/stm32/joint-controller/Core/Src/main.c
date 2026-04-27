@@ -24,9 +24,13 @@
 /* USER CODE BEGIN Includes */
 #include <stdio.h>
 #include <string.h>
+#include <stdarg.h>
 #include "imu_buffer.h"
 #include "can_common.h"
 #include "can_imu.h"
+#include "can_motor.h"
+#include "can_system.h"
+#include "can/ak70_9.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -37,6 +41,22 @@
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
 #define MY_NODE_ID   CAN_NODE_LEFT_HIP   // change per board
+#define MY_MOTOR_CAN_ID     105        // default 104
+
+/*
+ * ── Torque-to-Current Conversion ──
+ * AK70-9 KV60 datasheet:
+ *   Kt = 0.159 Nm/A (motor shaft torque constant)
+ *   Gear ratio = 9:1
+ *   Output torque = Kt * gear_ratio * Iq
+ *   Iq = desired_torque / (Kt * gear_ratio)
+ */
+#define AK70_9_KT          0.159f
+#define AK70_9_GEAR_RATIO   9.0f
+#define KT_EFFECTIVE        (AK70_9_KT * AK70_9_GEAR_RATIO)  /* 1.431 Nm/A */
+
+#define CURRENT_REFRESH_MS  50    /* Re-send interval to prevent VESC timeout */
+#define CURRENT_LIMIT       5.0f  //Amps
 
 /* USER CODE END PD */
 
@@ -54,13 +74,30 @@ DMA_HandleTypeDef hdma_i2c3_rx;
 UART_HandleTypeDef huart2;
 
 /* USER CODE BEGIN PV */
-uint8_t          rx_data[1];
-uint8_t          rx_buffer[100];
-uint8_t          rx_index = 0;
-/* READALL streams one line at a time, so tx_buffer only needs to hold one
-   formatted reading (~60 chars). 256 bytes gives comfortable margin. */
-uint8_t tx_buffer[256];
+// UART variables
+uint8_t             rx_data[1];
+uint8_t         rx_buffer[100];
+uint8_t           rx_index = 0;
+uint8_t         tx_buffer[256];
 volatile uint8_t cmd_ready = 0;
+
+
+//motor variables
+static MotorStatus g_motor_status       = {0};
+static float       g_active_current     = 0.0f;
+static uint8_t     g_motor_active       = 0;
+static uint32_t    g_last_refresh_tick  = 0;
+static uint32_t    g_last_status_tick   = 0;
+static uint32_t    g_motor_rx_count     = 0;
+
+
+/* TX drop counter — incremented when CAN mailboxes are full */
+static uint32_t g_can_tx_dropped = 0;
+
+
+volatile uint8_t g_estop_active = 0;
+volatile uint8_t g_estop_reason = 0;
+
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -72,13 +109,42 @@ static void MX_CAN1_Init(void);
 static void MX_I2C3_Init(void);
 /* USER CODE BEGIN PFP */
 
+// IMU TX
+static void CAN_Send_IMU_Data(void);
 
+//UART
 static void process_command(void);
-void CAN_Send_IMU_Data(void);
+
+
+// CAN RX processing + handlers
+static void CAN_Poll_Incoming(void);
+static void handle_estop(uint8_t reason);
+static void handle_torque_cmd(float torque_nm);
+static void motor_zero(void);
+
+
+/* Debug helpers */
+static void debug_printf(const char *fmt, ...);
+
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
+
+static float clampf(float val, float lo, float hi) {
+    if (val < lo) return lo;
+    if (val > hi) return hi;
+    return val;
+}
+
+static void debug_printf(const char *fmt, ...) {
+    char buf[128];
+    va_list args;
+    va_start(args, fmt);
+    vsnprintf(buf, sizeof(buf), fmt, args);
+    va_end(args);
+    HAL_UART_Transmit(&huart2, (uint8_t *)buf, strlen(buf), 50);
+}
 
 /* USER CODE END 0 */
 
@@ -86,27 +152,18 @@ void CAN_Send_IMU_Data(void);
  * @brief  The application entry point.
  * @retval int
  */
-int main(void)
-{
-
+int main(void){
   /* USER CODE BEGIN 1 */
-
   /* USER CODE END 1 */
-
   /* MCU Configuration--------------------------------------------------------*/
-
   /* Reset of all peripherals, Initializes the Flash interface and the Systick. */
   HAL_Init();
-
   /* USER CODE BEGIN Init */
   /* USER CODE END Init */
-
   /* Configure the system clock */
   SystemClock_Config();
-
   /* USER CODE BEGIN SysInit */
   /* USER CODE END SysInit */
-
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
   MX_DMA_Init();
@@ -115,10 +172,22 @@ int main(void)
   MX_I2C3_Init();
 
   /* USER CODE BEGIN 2 */
-  if (!can_common_init(&hcan1, MY_NODE_ID))
-  {
+  /*
+   * can_common_init() configures all hardware filters, starts the CAN
+   * peripheral, enables both FIFO IRQs, and activates notifications.
+   */
+  if (can_common_init(&hcan1, MY_NODE_ID)) {
+    debug_printf("CAN OK node=%d motor_id=%d\r\n", MY_NODE_ID, MY_MOTOR_CAN_ID);
+    /*Three quick blinks = CAN init success */
+    for (int i = 0; i < 3; i++) {
+      HAL_GPIO_TogglePin(LD2_GPIO_Port, LD2_Pin); HAL_Delay(150);
+      HAL_GPIO_TogglePin(LD2_GPIO_Port, LD2_Pin); HAL_Delay(150);
+    }
+  } else {
+    debug_printf("CAN INIT FAILED\r\n");
     Error_Handler();
   }
+
   lsm6ds3tr_init_driver(&hi2c3);
   HAL_UART_Receive_IT(&huart2, rx_data, 1);
 
@@ -129,30 +198,65 @@ int main(void)
   /* USER CODE END 2 */
 
   /* Infinite loop */
-
   while (1)
   {
     /* USER CODE BEGIN 3 */
 
-    if (cmd_ready)
-    {
+    if (cmd_ready){
       cmd_ready = 0;
       process_command();
     }
 
-    // Non-blocking DMA read; result is processed in HAL_I2C_MemRxCpltCallback
-    // which also pushes to the circular buffer and updates imu_data.
-
-    if ((HAL_GetTick() - last_tick) >= 2)
-    {
+     /*
+     * CAN TX: send IMU data at 500 Hz (every 2 ms).
+     * Suppressed during ESTOP so the Pi sees the data stream stop —
+     * this is a secondary signal that something is wrong, on top of
+     * the motor_status acknowledgement sent by handle_estop().
+     */
+    if (!g_estop_active && (HAL_GetTick() - last_tick) >= 2){
       last_tick = HAL_GetTick();
-
       CAN_Send_IMU_Data();
-
       lsm6ds3tr_init_dma_read();
     }
+
+    /*
+     * CAN RX: drain one frame per loop iteration.
+     * One frame per iteration keeps this from blocking UART and IMU
+     * work during a burst of CAN traffic. At 500 Hz TX and low bus
+     * load, the ring buffer never accumulates more than a few frames.
+     */
+    CAN_Poll_Incoming();
+
+
+    /*
+     * ── Motor current refresh every 50 ms ──
+     * Re-sends the last commanded current to prevent the AK70-9 watchdog
+     * from cutting power. Only runs when motor is active and ESTOP is clear.
+     */
+    if (g_motor_active && !g_estop_active &&
+        (HAL_GetTick() - g_last_refresh_tick) >= CURRENT_REFRESH_MS)
+    {
+      comm_can_set_current(MY_MOTOR_CAN_ID, g_active_current);
+      g_last_refresh_tick = HAL_GetTick();
+    }
+ 
+
+    // Periodic status dump every 1s
+    if (HAL_GetTick() - g_last_status_tick >= 1000){
+      debug_printf("[STATUS] estop=%d motor_active=%d cmd=%.3fA rx=%lu | "
+                   "pos=%.1f spd=%.0f cur=%.2fA temp=%dC err=%d(%s)\r\n",
+                   g_estop_active, g_motor_active, g_active_current,
+                   g_motor_rx_count,
+                   g_motor_status.position, g_motor_status.speed,
+                   g_motor_status.current,  g_motor_status.temperature,
+                   g_motor_status.error,
+                   motor_error_to_string(g_motor_status.error));
+      g_last_status_tick = HAL_GetTick();
+    }
+
+
+      /* USER CODE END 3 */
   }
-  /* USER CODE END 3 */
 }
 
 /**
@@ -365,28 +469,147 @@ static void MX_GPIO_Init(void)
  * can_send_imu_gyro(). Payloads are little-endian int16 values scaled by 100.
  * Called every loop cycle; returns immediately if IMU is not connected.
  */
-void CAN_Send_IMU_Data(void)
+static void CAN_Send_IMU_Data(void)
 {
   LSM6DS3TR_Data_t *imu = lsm6ds3tr_get_data();
-
-  if (imu->state != SENSOR_STATE_CONNECTED)
-    return;
+  if (imu->state != SENSOR_STATE_CONNECTED) return;
 
   int accel_ok = can_send_imu_accel(MY_NODE_ID,
                                     imu->accel.filt_x,
                                     imu->accel.filt_y,
                                     imu->accel.filt_z);
-
   int gyro_ok = can_send_imu_gyro(MY_NODE_ID,
                                   imu->gyro.filt_x,
                                   imu->gyro.filt_y,
                                   imu->gyro.filt_z);
 
+  if (!accel_ok) g_can_tx_dropped++;
+  if (!gyro_ok)  g_can_tx_dropped++;
   if (!accel_ok || !gyro_ok)
   {
     HAL_GPIO_TogglePin(LD2_GPIO_Port, LD2_Pin); // Transmission failed
   }
 }
+
+/**
+ * @brief Drain one frame from the ring buffer and route it to the right handler.
+ *
+ * Called every main loop iteration. The ISR (HAL_CAN_RxFifo0MsgPendingCallback
+ * in can_common.c) already pushed the frame into g_rxq; we just pop and dispatch.
+ *
+ * Priority order:
+ *   1. ESTOP      — checked first, always acted on
+ *   2. TORQUE_CMD — only accepted when ESTOP is not active
+ */
+static void CAN_Poll_Incoming(void)
+{
+  CanFrame frame;
+  if (!can_recv(&frame)) return;   /* ring buffer empty */
+
+/* ── Motor feedback (extended CAN frame from AK70-9) ── */
+  if (frame.is_extended){
+    g_motor_rx_count++;
+    motor_receive(&g_motor_status, frame.data);
+    debug_printf("MOTOR pos=%.1f spd=%.0f cur=%.2f temp=%d err=%d(%s)\r\n",
+                 g_motor_status.position, g_motor_status.speed,
+                 g_motor_status.current,  g_motor_status.temperature,
+                 g_motor_status.error,
+                 motor_error_to_string(g_motor_status.error));
+    return;
+  }
+
+  /* ── Standard frames: check message type ── */
+  uint8_t msg_type = can_get_msg_type((uint16_t)frame.id);
+
+
+  /* 1. ESTOP */
+  uint8_t estop_reason = 0;
+  if (can_parse_estop(&frame, &estop_reason))
+  {
+    handle_estop(estop_reason);
+    return;
+  }
+
+  /*
+   * 2. TORQUE_CMD
+   *
+   * Silently discarded during ESTOP — motor stays at zero until board reset.
+   * Hardware filter in can_common_init() already verified this frame is
+   * addressed to MY_NODE_ID, so no destination check needed here.
+   */
+  float torque_nm = 0.0f;
+  if (msg_type == CAN_MSG_TORQUE_CMD && !g_estop_active)
+  {
+    if (can_parse_torque_cmd(&frame, &torque_nm))
+    {
+      handle_torque_cmd(torque_nm);
+    }
+    return;
+  }
+
+  /* Any other frame that passed the hardware filter lands here.
+   * Add more handlers above this line as the protocol grows.
+   */
+}
+
+static void handle_estop(uint8_t reason)
+{
+  g_estop_active = 1;
+  g_estop_reason = reason;
+
+  /* Zero motor */
+  motor_zero();
+  g_motor_active = 0;
+  g_active_current = 0.0f;
+
+  /* Acknowledge back to Pi */
+  can_send_motor_status(MY_NODE_ID, 0.0f, 0.0f, 0.0f, 0, reason);
+
+  /* LED solid on — distinct from the TX-error blink */
+  HAL_GPIO_WritePin(LD2_GPIO_Port, LD2_Pin, GPIO_PIN_SET);
+
+  debug_printf("ESTOP reason=0x%02X\r\n", reason);
+}
+
+/**
+ * @brief Handle an incoming TORQUE_CMD frame from the Pi.
+ *
+ * Converts torque (N·m) to current (A) using the AK70-9 effective torque
+ * constant, clamps to CURRENT_LIMIT, then sends to the motor driver via
+ * comm_can_set_current() from ak70_9.c.
+ *
+ * Also resets the refresh timer so the motor doesn't time out.
+ */
+static void handle_torque_cmd(float torque_nm)
+{
+  /*
+   * Torque → current conversion using AK70-9 datasheet values.
+   * KT_EFFECTIVE = Kt * gear_ratio = 0.159 * 9 = 1.431 N·m/A
+   */
+  float current = torque_nm / KT_EFFECTIVE;
+
+  /* Clamp to test-safe limit before sending anything to the motor */
+  g_active_current = clampf(current, -CURRENT_LIMIT, CURRENT_LIMIT);
+
+  /* Send to AK70-9 driver via extended CAN (ak70_9.c handles the frame format) */
+  comm_can_set_current(MY_MOTOR_CAN_ID, g_active_current);
+
+  g_motor_active = 1;
+  g_last_refresh_tick = HAL_GetTick();
+
+  HAL_GPIO_TogglePin(LD2_GPIO_Port, LD2_Pin);
+  debug_printf("torque=%.3f Nm -> current=%.3f A\r\n", torque_nm, g_active_current);
+}
+
+static void motor_zero(void)
+{
+  for (int attempt = 0; attempt < 3; attempt++)
+  {
+    comm_can_set_current(MY_MOTOR_CAN_ID, 0.0f);
+    HAL_Delay(1);
+  }
+}
+
 
 /**
  * @brief UART RX interrupt callback — accumulates bytes into rx_buffer.
@@ -418,113 +641,62 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
 /**
  * @brief Process a complete UART command stored in rx_buffer.
  *
- * Commands:
- *   READ       - Latest filtered accel + gyro (single reading, same as before)
- *   READLATEST - Latest reading from the circular buffer
- *   READALL    - All 100 stored readings, oldest first
- *   STATUS     - IMU connection state
- *   REGISTER   - I2C device address
- *   CONFIG     - Gyro and accel control register values
- *   POWER      - Power configuration register value
+ * IMU commands:
+ *   READ        - Latest filtered accel + gyro
+ *   READLATEST  - Latest reading from the circular buffer
+ *   STATUS      - IMU connection state
+ *   REGISTER    - I2C device address
+ *   CONFIG      - Gyro and accel control register values
+ *   POWER       - Power configuration register value
  *
- * ISR-safety for READLATEST / READALL:
- *   The DMA completion callback (HAL_I2C_MemRxCpltCallback) writes to the
- *   circular buffer from ISR context.  To prevent a torn read we briefly
- *   disable the DMA interrupt while copying data out of the buffer, then
- *   re-enable it before transmitting — which can take time.
+ * CAN diagnostic commands:
+ *   CANERR      - CAN peripheral error counters (TEC/REC)
+ *   CANDROP     - Cumulative TX drop count since boot
+ *
+ * Motor commands:
+ *   MOTORSTATUS - Latest decoded motor feedback (pos, spd, cur, temp, err)
+ *   ZERO        - Command 0 A to the motor (bench testing)
+ *
+ * ESTOP commands:
+ *   ESTOP       - Manually trigger ESTOP (bench testing)
+ *   ESTOPSTATE  - Query whether ESTOP is active and the reason code
  */
 static void process_command(void)
 {
   LSM6DS3TR_Data_t *imu = lsm6ds3tr_get_data();
   uint16_t len = 0;
 
+  /* ── IMU commands ── */
   if (strcmp((char *)rx_buffer, "READ") == 0)
   {
     len = sprintf((char *)tx_buffer,
                   "AX:%.2f AY:%.2f AZ:%.2f GX:%.2f GY:%.2f GZ:%.2f\r\n",
                   imu->accel.filt_x, imu->accel.filt_y, imu->accel.filt_z,
-                  imu->gyro.filt_x, imu->gyro.filt_y, imu->gyro.filt_z);
+                  imu->gyro.filt_x,  imu->gyro.filt_y,  imu->gyro.filt_z);
     HAL_UART_Transmit(&huart2, tx_buffer, len, 100);
   }
   else if (strcmp((char *)rx_buffer, "READLATEST") == 0)
   {
     IMUReading reading;
-
-    // Disable DMA interrupt while reading from the shared buffer
     HAL_NVIC_DisableIRQ(DMA1_Stream1_IRQn);
     int ok = imu_buffer_get_latest(&reading);
     HAL_NVIC_EnableIRQ(DMA1_Stream1_IRQn);
 
     if (ok)
-    {
       len = sprintf((char *)tx_buffer,
                     "LATEST AX:%.2f AY:%.2f AZ:%.2f GX:%.2f GY:%.2f GZ:%.2f\r\n",
                     reading.ax, reading.ay, reading.az,
                     reading.gx, reading.gy, reading.gz);
-    }
     else
-    {
       len = sprintf((char *)tx_buffer, "LATEST:EMPTY\r\n");
-    }
     HAL_UART_Transmit(&huart2, tx_buffer, len, 200);
   }
-
-// COMMENTED OUT BECAUSE NOW THAT WE ARE USING BUFFER ON PI
-// MIGHT BRING BACK BUFFER IF NEEDED BY CONTROLS
-
-/*  else if (strcmp((char *)rx_buffer, "READALL") == 0)
-  {
-    // Stack-allocate the snapshot to keep it off the heap.
-    // 100 * 24 bytes = 2400 bytes — requires _Min_Stack_Size >= 0x1000.
-    IMUReading snapshot[IMU_BUFFER_CAPACITY];
-    size_t count;
-
-    // Disable DMA interrupt while copying the entire buffer
-    HAL_NVIC_DisableIRQ(DMA1_Stream1_IRQn);
-    count = imu_buffer_get_all(snapshot);
-    HAL_NVIC_EnableIRQ(DMA1_Stream1_IRQn);
-
-    if (count == 0)
-    {
-      len = sprintf((char *)tx_buffer, "ALL:EMPTY\r\n");
-      HAL_UART_Transmit(&huart2, tx_buffer, len, 100);
-    }
-    else
-    {
-      // Header
-      len = sprintf((char *)tx_buffer, "ALL:COUNT=%u\r\n", (unsigned)count);
-      HAL_UART_Transmit(&huart2, tx_buffer, len, 100);
-
-      // Stream readings one at a time to avoid overflowing tx_buffer
-      for (size_t i = 0; i < count; ++i)
-      {
-        len = sprintf((char *)tx_buffer,
-                      "[%u]C: %d AX:%.2f AY:%.2f AZ:%.2f GX:%.2f GY:%.2f GZ:%.2f\r\n",
-                      (unsigned)i,
-                      snapshot[i].tick,
-                      snapshot[i].ax, snapshot[i].ay, snapshot[i].az,
-                      snapshot[i].gx, snapshot[i].gy, snapshot[i].gz);
-        // Timeout scaled to line length: 200 ms per line is generous at 115200
-        HAL_UART_Transmit(&huart2, tx_buffer, len, 200);
-      }
-    }
-  } */
   else if (strcmp((char *)rx_buffer, "STATUS") == 0)
   {
     lsm6ds3tr_check_connection();
-    if (imu->state == SENSOR_STATE_CONNECTED)
-      len = sprintf((char *)tx_buffer, "STATUS:CONNECTED\r\n");
-    else
-      len = sprintf((char *)tx_buffer, "STATUS:LOST\r\n");
-    HAL_UART_Transmit(&huart2, tx_buffer, len, 100);
-  }
-  else if (strcmp((char *)rx_buffer, "CANERR") == 0)
-  {
-    uint32_t err = HAL_CAN_GetError(&hcan1);
-    len = sprintf((char *)tx_buffer, "CAN_ERR:0x%08lX TEC:%lu REC:%lu\r\n",
-                  err,
-                  (hcan1.Instance->ESR >> 16) & 0xFF,  // Transmit error counter
-                  (hcan1.Instance->ESR >> 24) & 0xFF); // Receive error counter
+    len = sprintf((char *)tx_buffer,
+                  imu->state == SENSOR_STATE_CONNECTED
+                  ? "STATUS:CONNECTED\r\n" : "STATUS:LOST\r\n");
     HAL_UART_Transmit(&huart2, tx_buffer, len, 100);
   }
   else if (strcmp((char *)rx_buffer, "REGISTER") == 0)
@@ -544,6 +716,60 @@ static void process_command(void)
     len = sprintf((char *)tx_buffer, "POWER_CFG:0x%02X\r\n", imu->power_config);
     HAL_UART_Transmit(&huart2, tx_buffer, len, 100);
   }
+
+   /* ── CAN diagnostics ── */
+  else if (strcmp((char *)rx_buffer, "CANERR") == 0)
+  {
+    uint32_t err = HAL_CAN_GetError(&hcan1);
+    len = sprintf((char *)tx_buffer, "CAN_ERR:0x%08lX TEC:%lu REC:%lu\r\n",
+                  err,
+                  (hcan1.Instance->ESR >> 16) & 0xFF,
+                  (hcan1.Instance->ESR >> 24) & 0xFF);
+    HAL_UART_Transmit(&huart2, tx_buffer, len, 100);
+  }
+  else if (strcmp((char *)rx_buffer, "CANDROP") == 0)
+  {
+    len = sprintf((char *)tx_buffer, "DROPPED:%lu\r\n", g_can_tx_dropped);
+    HAL_UART_Transmit(&huart2, tx_buffer, len, 100);
+  }
+
+  /* ── Motor commands ── */
+  else if (strcmp((char *)rx_buffer, "MOTORSTATUS") == 0)
+  {
+    len = sprintf((char *)tx_buffer,
+                  "MOTOR pos=%.1f spd=%.0f cur=%.2fA temp=%dC err=%d(%s) cmd=%.3fA\r\n",
+                  g_motor_status.position, g_motor_status.speed,
+                  g_motor_status.current,  g_motor_status.temperature,
+                  g_motor_status.error,
+                  motor_error_to_string(g_motor_status.error),
+                  g_active_current);
+    HAL_UART_Transmit(&huart2, tx_buffer, len, 100);
+  }
+  else if (strcmp((char *)rx_buffer, "ZERO") == 0)
+  {
+    motor_zero();
+    g_motor_active   = 0;
+    g_active_current = 0.0f;
+    len = sprintf((char *)tx_buffer, "MOTOR:ZEROED\r\n");
+    HAL_UART_Transmit(&huart2, tx_buffer, len, 100);
+  }
+
+  /* ── ESTOP commands ── */
+  else if (strcmp((char *)rx_buffer, "ESTOP") == 0)
+  {
+    handle_estop(0xFF);   /* 0xFF = manual/debug trigger */
+    len = sprintf((char *)tx_buffer, "ESTOP:TRIGGERED reason=0xFF\r\n");
+    HAL_UART_Transmit(&huart2, tx_buffer, len, 100);
+  }
+  else if (strcmp((char *)rx_buffer, "ESTOPSTATE") == 0)
+  {
+    if (g_estop_active)
+      len = sprintf((char *)tx_buffer, "ESTOP:ACTIVE reason=0x%02X\r\n", g_estop_reason);
+    else
+      len = sprintf((char *)tx_buffer, "ESTOP:CLEAR\r\n");
+    HAL_UART_Transmit(&huart2, tx_buffer, len, 100);
+  }
+
   else
   {
     len = sprintf((char *)tx_buffer, "ERR:UNKNOWN_CMD\r\n");
