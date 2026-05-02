@@ -42,7 +42,7 @@ Bits [3:0]  = Dest/Context  (4 bits)
 | TORQUE_CMD           | 0x1   | Pi → STM32      |
 | MOTOR_STATUS (future)| 0x2   | STM32 → Pi      |
 
-Example — Pi (node 0) sends TORQUE_CMD to Left Hip (node 1):
+For example, Pi (node 0) sends TORQUE_CMD to Left Hip (node 1) would look like the following:
 `ID = (0x1 << 7) | (0 << 4) | 1 = 0x081`
 
 ### Extended Frames (STM32 ↔ Motor)
