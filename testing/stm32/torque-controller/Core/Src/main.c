@@ -45,8 +45,8 @@
  * Change MY_MOTOR_CAN_ID to match the VESC CAN ID configured on the
  * paired motor (default 104; assign unique IDs per motor).
  */
-#define MY_NODE_ID          2
-#define MY_MOTOR_CAN_ID     105         /* 104 default */
+#define MY_NODE_ID          3
+#define MY_MOTOR_CAN_ID     106     /* 104 default */
 
 /*
  * ── Torque-to-Current Conversion ──
