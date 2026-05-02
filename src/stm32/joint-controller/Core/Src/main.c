@@ -41,7 +41,7 @@
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
 #define MY_NODE_ID   CAN_NODE_LEFT_HIP   // change per board
-#define MY_MOTOR_CAN_ID     105        // default 104
+#define MY_MOTOR_CAN_ID     104        // default 104
 
 /*
  * ── Torque-to-Current Conversion ──

@@ -40,30 +40,3 @@ int can_send_imu_gyro(uint8_t src_node, float gx, float gy, float gz) {
     return can_send_std(id, data, 8);
 }
 
-//int can_parse_imu_accel(const CanFrame *frame, float *ax, float *ay, float *az) {
-//    if (frame->is_extended) return 0;
-//    if (can_get_msg_type((uint16_t)frame->id) != CAN_MSG_IMU_ACCEL) return 0;
-//    if (frame->dlc < 8) return 0;
-//
-//    int16_t raw;
-//    memcpy(&raw, &frame->data[0], 2); *ax = raw / 100.0f;
-//    memcpy(&raw, &frame->data[2], 2); *ay = raw / 100.0f;
-//    memcpy(&raw, &frame->data[4], 2); *az = raw / 100.0f;
-//    memcpy(timestamp_ms, &frame->data[6], 2);
-//
-//    return 1;
-//}
-
-//int can_parse_imu_gyro(const CanFrame *frame, float *gx, float *gy, float *gz) {
-//    if (frame->is_extended) return 0;
-//    if (can_get_msg_type((uint16_t)frame->id) != CAN_MSG_IMU_GYRO) return 0;
-//    if (frame->dlc < 8) return 0;
-//
-//    int16_t raw;
-//    memcpy(&raw, &frame->data[0], 2); *gx = raw / 100.0f;
-//    memcpy(&raw, &frame->data[2], 2); *gy = raw / 100.0f;
-//    memcpy(&raw, &frame->data[4], 2); *gz = raw / 100.0f;
-//    memcpy(timestamp_ms, &frame->data[6], 2);   /* <-- new */
-//
-//    return 1;
-//}
