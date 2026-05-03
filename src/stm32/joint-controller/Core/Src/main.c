@@ -40,8 +40,8 @@
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
-#define MY_NODE_ID   CAN_NODE_LEFT_HIP   // change per board
-#define MY_MOTOR_CAN_ID     104        // default 104
+#define MY_NODE_ID   CAN_NODE_RIGHT_HIP   // change per board
+#define MY_MOTOR_CAN_ID     105        // default 104
 
 /*
  * ── Torque-to-Current Conversion ──
@@ -176,23 +176,48 @@ int main(void){
    * can_common_init() configures all hardware filters, starts the CAN
    * peripheral, enables both FIFO IRQs, and activates notifications.
    */
-  if (can_common_init(&hcan1, MY_NODE_ID)) {
-    debug_printf("CAN OK node=%d motor_id=%d\r\n", MY_NODE_ID, MY_MOTOR_CAN_ID);
-    /*Three quick blinks = CAN init success */
-    for (int i = 0; i < 3; i++) {
-      HAL_GPIO_TogglePin(LD2_GPIO_Port, LD2_Pin); HAL_Delay(150);
-      HAL_GPIO_TogglePin(LD2_GPIO_Port, LD2_Pin); HAL_Delay(150);
-    }
-  } else {
-    debug_printf("CAN INIT FAILED\r\n");
-    Error_Handler();
-  }
 
-  lsm6ds3tr_init_driver(&hi2c3);
-  HAL_UART_Receive_IT(&huart2, rx_data, 1);
+  debug_printf("before pre-can delay\r\n");
+  HAL_Delay(150);
+  debug_printf("after pre-can delay\r\n");
+
+  	if (can_common_init(&hcan1, MY_NODE_ID, MY_MOTOR_CAN_ID)) {
+		debug_printf("CAN OK node=%d motor_id=%d\r\n", MY_NODE_ID, MY_MOTOR_CAN_ID);
+//		HAL_CAN_DeactivateNotification(&hcan1, CAN_IT_RX_FIFO1_MSG_PENDING);
+//		HAL_CAN_DeactivateNotification(&hcan1, CAN_IT_RX_FIFO0_MSG_PENDING);		/*Three quick blinks = CAN init success */
+//		debug_printf("Before delay test, tick=%lu primask=%lu\r\n",
+//		             HAL_GetTick(),
+//		             __get_PRIMASK());
+//
+//		__enable_irq();
+//
+//		debug_printf("After enable irq, tick=%lu primask=%lu\r\n",
+//		             HAL_GetTick(),
+//		             __get_PRIMASK());
+//		for (int i = 0; i < 3; i++) {
+//		        debug_printf("In for loop of 3 blinks\r\n");
+//		        HAL_GPIO_TogglePin(LD2_GPIO_Port, LD2_Pin);
+//		        debug_printf("after first toggle before delay\r\n");
+//		        HAL_Delay(150);
+//		        debug_printf("after first toggle and delay\r\n");
+//		        HAL_GPIO_TogglePin(LD2_GPIO_Port, LD2_Pin);
+//		        HAL_Delay(150);
+//		        debug_printf("after second toggle\r\n");
+//		    }
+	}else{
+		debug_printf("CAN INIT FAILED\r\n");
+		Error_Handler();
+	}
+  	debug_printf("before lsm6ds3tr init\r\n");
+  	lsm6ds3tr_init_driver(&hi2c3);
+  	debug_printf("after lsm6ds3tr init\r\n");
+  	HAL_UART_Receive_IT(&huart2, rx_data, 1);
+  	debug_printf("after hal_uart_receive_it \r\n");
 
   // Blocking calibration (~0.3 s). Keep the sensor stationary.
-  lsm6ds3tr_calibrate();
+  	debug_printf("before calibrate\r\n");
+  	lsm6ds3tr_calibrate();
+  	debug_printf("after calibrate\r\n");
 
   uint32_t last_tick = HAL_GetTick();
   /* USER CODE END 2 */
@@ -201,10 +226,12 @@ int main(void){
   while (1)
   {
     /* USER CODE BEGIN 3 */
-
+//	  debug_printf("in while loop\r\n");
     if (cmd_ready){
       cmd_ready = 0;
+//      debug_printf("about to process command\r\n");
       process_command();
+//      debug_printf("command processed\r\n");
     }
 
      /*
@@ -214,9 +241,11 @@ int main(void){
      * the motor_status acknowledgement sent by handle_estop().
      */
     if (!g_estop_active && (HAL_GetTick() - last_tick) >= 2){
+//    	debug_printf("about to send imu data\r\n");
       last_tick = HAL_GetTick();
       CAN_Send_IMU_Data();
       lsm6ds3tr_init_dma_read();
+//      debug_printf("imu data sent\r\n");
     }
 
     /*
@@ -225,7 +254,9 @@ int main(void){
      * work during a burst of CAN traffic. At 500 Hz TX and low bus
      * load, the ring buffer never accumulates more than a few frames.
      */
+//    debug_printf("BEFORE can poll incoming\r\n");
     CAN_Poll_Incoming();
+//    debug_printf("AFTER can poll incoming\r\n");
 
 
     /*
@@ -242,7 +273,16 @@ int main(void){
  
 
     // Periodic status dump every 1s
-    if (HAL_GetTick() - g_last_status_tick >= 1000){
+    if (HAL_GetTick() - g_last_status_tick >= 10000){
+    	debug_printf("fifo0_cb=%lu\r\n", g_fifo0_cb_count);
+    	debug_printf("[FIFO0] cb=%lu ok=%lu fail=%lu fill=%lu id=0x%lX ext=%u dlc=%u\r\n",
+    	             g_fifo0_cb_count,
+    	             g_fifo0_get_ok,
+    	             g_fifo0_get_fail,
+    	             g_fifo0_fill_at_entry,
+    	             g_fifo0_last_id,
+    	             g_fifo0_last_ext,
+    	             g_fifo0_last_dlc);
       debug_printf("[STATUS] estop=%d motor_active=%d cmd=%.3fA rx=%lu | "
                    "pos=%.1f spd=%.0f cur=%.2fA temp=%dC err=%d(%s)\r\n",
                    g_estop_active, g_motor_active, g_active_current,
@@ -253,6 +293,22 @@ int main(void){
                    motor_error_to_string(g_motor_status.error));
       g_last_status_tick = HAL_GetTick();
     }
+
+//    if (g_can_recover_requested)
+//    {
+//        g_can_recover_requested = 0;
+//
+//        HAL_CAN_Stop(&hcan1);
+//        HAL_Delay(100);
+//        HAL_CAN_Start(&hcan1);
+//
+//        HAL_CAN_ActivateNotification(&hcan1,
+//            CAN_IT_RX_FIFO0_MSG_PENDING |
+//            CAN_IT_RX_FIFO1_MSG_PENDING |
+//            CAN_IT_ERROR |
+//            CAN_IT_BUSOFF |
+//            CAN_IT_LAST_ERROR_CODE);
+//    }
 
 
       /* USER CODE END 3 */
@@ -462,6 +518,25 @@ static void MX_GPIO_Init(void)
 
 /* USER CODE BEGIN 4 */
 
+
+void HAL_UART_ErrorCallback(UART_HandleTypeDef *huart)
+{
+  if (huart->Instance != USART2) return;
+
+  uint32_t err = HAL_UART_GetError(huart);
+
+  rx_index = 0;
+  rx_buffer[0] = '\0';
+
+  // Restart RX after error
+  HAL_UART_Receive_IT(&huart2, rx_data, 1);
+
+  // Optional debug indicator
+  HAL_GPIO_TogglePin(LD2_GPIO_Port, LD2_Pin);
+
+  (void)err;
+}
+
 /**
  * @brief Transmit latest IMU accel + gyro frames to Pi via CAN
  *
@@ -625,25 +700,25 @@ static void motor_zero(void)
  */
 void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
 {
-  UNUSED(huart);
+	if (huart->Instance != USART2) return;
 
-  if (rx_data[0] == '\n' || rx_data[0] == '\r')
-  {
-    if (rx_index > 0)
-    {
-      rx_buffer[rx_index] = '\0';
-      cmd_ready = 1;
-      rx_index = 0;
-    }
-  }
-  else if (rx_index < sizeof(rx_buffer) - 1)
-  {
-    rx_buffer[rx_index++] = rx_data[0];
-  }
+	char c = (char)rx_data[0];
 
-  HAL_UART_Receive_IT(&huart2, rx_data, 1);
+	if (c == '\n' || c == '\r'){
+		if (rx_index > 0){
+			rx_buffer[rx_index] = '\0';
+			cmd_ready = 1;
+			rx_index = 0;
+		}
+	}
+	else if (rx_index < sizeof(rx_buffer) - 1){
+		rx_buffer[rx_index++] = (uint8_t)c;
+	}else{
+		rx_index = 0;
+		rx_buffer[0] = '\0';
+	}
+	HAL_UART_Receive_IT(&huart2, rx_data, 1);
 }
-
 /**
  * @brief Process a complete UART command stored in rx_buffer.
  *
@@ -793,6 +868,7 @@ void Error_Handler(void)
 {
   /* USER CODE BEGIN Error_Handler_Debug */
   /* User can add his own implementation to report the HAL error return state */
+	debug_printf("In error handler\r\n");
   __disable_irq();
   while (1)
   { HAL_GPIO_TogglePin( LD2_GPIO_Port, LD2_Pin); HAL_Delay(200); }

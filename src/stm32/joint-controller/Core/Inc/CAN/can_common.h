@@ -14,6 +14,9 @@
 #include "stm32f4xx_hal.h"
 #include <stdint.h>
 
+
+extern volatile uint8_t g_can_recover_requested;
+extern volatile uint32_t g_last_can_error;
 /* ── Node IDs ── */
 #define CAN_NODE_PI          0
 #define CAN_NODE_LEFT_HIP    1
@@ -62,6 +65,22 @@ typedef struct {
 /* ── Ring Buffer (RX) ── */
 #define CAN_RX_BUFFER_CAPACITY 32
 
+
+/* ── Debug Counters (for FIFO0 troubleshooting) ── */
+extern volatile uint32_t g_fifo0_cb_count;
+extern volatile uint32_t g_fifo0_get_ok;
+extern volatile uint32_t g_fifo0_get_fail;
+extern volatile uint32_t g_fifo0_last_id;
+extern volatile uint8_t  g_fifo0_last_ext;
+extern volatile uint8_t  g_fifo0_last_dlc;
+extern volatile uint32_t g_fifo0_fill_at_entry;
+extern volatile uint32_t g_fifo1_drop_count;
+extern volatile uint32_t g_can_error_count;
+extern volatile uint32_t g_last_can_error;
+extern volatile uint32_t g_last_can_esr;
+extern volatile uint8_t  g_can_busoff_seen;
+
+
 typedef struct {
     CanFrame buf[CAN_RX_BUFFER_CAPACITY];
     volatile uint16_t head, tail, count;
@@ -80,7 +99,7 @@ typedef struct {
  *
  * Returns 1 on success, 0 on failure.
  */
-int can_common_init(CAN_HandleTypeDef *hcan, uint8_t my_node_id);
+int can_common_init(CAN_HandleTypeDef *hcan, uint8_t my_node_id, uint8_t motor_can_id);
 
 /*
  * Transmit a CAN frame using an 11-bit standard identifier.
