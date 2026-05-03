@@ -105,7 +105,7 @@ int can_common_init(CAN_HandleTypeDef *hcan, uint8_t my_node_id, uint8_t my_moto
     if (HAL_CAN_ConfigFilter(hcan, &f) != HAL_OK) return 0;
 
     /* Filter 1: Accept standard TORQUE_CMD for my node (FIFO0) */
-    uint16_t torque_id = CAN_BUILD_ID(CAN_MSG_TORQUE_CMD, 0, my_node_id);
+    uint16_t torque_id = CAN_BUILD_ID(CAN_MSG_TORQUE_CMD, CAN_NODE_PI, my_node_id);
 
     memset(&f, 0, sizeof(f));
     f.FilterBank           = 1;
@@ -138,7 +138,7 @@ int can_common_init(CAN_HandleTypeDef *hcan, uint8_t my_node_id, uint8_t my_moto
     f.FilterMaskIdLow      = (uint16_t)( id32        & 0xFFFFU);
 
     f.FilterFIFOAssignment = CAN_FILTER_FIFO1;
-    f.FilterActivation     = DISABLE;
+    f.FilterActivation     = ENABLE;
     f.SlaveStartFilterBank = 14;
 
     if (HAL_CAN_ConfigFilter(hcan, &f) != HAL_OK) return 0;
@@ -158,14 +158,12 @@ int can_common_init(CAN_HandleTypeDef *hcan, uint8_t my_node_id, uint8_t my_moto
     HAL_NVIC_EnableIRQ(CAN1_SCE_IRQn);
 
     /* Activate RX and error notifications */
-//    uint32_t notif = CAN_IT_RX_FIFO0_MSG_PENDING |
-//                     CAN_IT_RX_FIFO1_MSG_PENDING |
-//                     CAN_IT_ERROR |
-//                     CAN_IT_BUSOFF |
-//                     CAN_IT_LAST_ERROR_CODE;
-//    uint32_t notif = CAN_IT_RX_FIFO0_MSG_PENDING |
-//                     CAN_IT_RX_FIFO1_MSG_PENDING;
-    uint32_t notif = CAN_IT_RX_FIFO0_MSG_PENDING;
+    uint32_t notif = CAN_IT_RX_FIFO0_MSG_PENDING |
+                     CAN_IT_RX_FIFO1_MSG_PENDING |
+                     CAN_IT_ERROR |
+                     CAN_IT_BUSOFF |
+                     CAN_IT_LAST_ERROR_CODE;
+
     if (HAL_CAN_ActivateNotification(hcan, notif) != HAL_OK) return 0;
 
     return 1;
@@ -177,6 +175,10 @@ int can_send_std(uint16_t std_id, const uint8_t *data, uint8_t dlc) {
     if (!g_hcan) return 0;
     if (std_id > 0x7FF) return 0;
     if (dlc > 8) return 0;
+
+    if (HAL_CAN_GetTxMailboxesFreeLevel(g_hcan) == 0) {
+        return 0;
+    }
 
     CAN_TxHeaderTypeDef hdr;
     memset(&hdr, 0, sizeof(hdr));
@@ -195,6 +197,10 @@ int can_send_ext(uint32_t ext_id, const uint8_t *data, uint8_t dlc) {
     if (ext_id > 0x1FFFFFFFU) return 0;
     if (dlc > 8) return 0;
 
+    if (HAL_CAN_GetTxMailboxesFreeLevel(g_hcan) == 0) {
+        return 0;
+    }
+
     CAN_TxHeaderTypeDef hdr;
     memset(&hdr, 0, sizeof(hdr));
     hdr.IDE   = CAN_ID_EXT;
@@ -209,10 +215,17 @@ int can_send_ext(uint32_t ext_id, const uint8_t *data, uint8_t dlc) {
 
 /* ── Recv ── */
 
+// PRIMASK preserves the previous interrupt state instead of blindly enabling interrupts.
 int can_recv(CanFrame *out) {
+    uint32_t primask = __get_PRIMASK();
+
     __disable_irq();
     int ok = rb_pop(&g_rxq, out);
-    __enable_irq();
+
+    if (!primask) {
+        __enable_irq();
+    }
+
     return ok;
 }
 
@@ -266,22 +279,15 @@ void HAL_CAN_RxFifo0MsgPendingCallback(CAN_HandleTypeDef *hcan)
     }
 }
 
-volatile uint32_t g_fifo1_drop_count = 0;
-
 void HAL_CAN_RxFifo1MsgPendingCallback(CAN_HandleTypeDef *hcan)
 {
     if (hcan->Instance != CAN1) return;
 
     while (HAL_CAN_GetRxFifoFillLevel(hcan, CAN_RX_FIFO1) > 0)
     {
-        CAN_RxHeaderTypeDef hdr;
-        uint8_t data[8];
-
-        if (HAL_CAN_GetRxMessage(hcan, CAN_RX_FIFO1, &hdr, data) != HAL_OK) {
+        if (!can_rx_handler(hcan, CAN_RX_FIFO1)) {
             break;
         }
-
-        g_fifo1_drop_count++;
     }
 }
 

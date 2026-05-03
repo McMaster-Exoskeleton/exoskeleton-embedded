@@ -177,47 +177,17 @@ int main(void){
    * peripheral, enables both FIFO IRQs, and activates notifications.
    */
 
-  debug_printf("before pre-can delay\r\n");
-  HAL_Delay(150);
-  debug_printf("after pre-can delay\r\n");
-
   	if (can_common_init(&hcan1, MY_NODE_ID, MY_MOTOR_CAN_ID)) {
 		debug_printf("CAN OK node=%d motor_id=%d\r\n", MY_NODE_ID, MY_MOTOR_CAN_ID);
-//		HAL_CAN_DeactivateNotification(&hcan1, CAN_IT_RX_FIFO1_MSG_PENDING);
-//		HAL_CAN_DeactivateNotification(&hcan1, CAN_IT_RX_FIFO0_MSG_PENDING);		/*Three quick blinks = CAN init success */
-//		debug_printf("Before delay test, tick=%lu primask=%lu\r\n",
-//		             HAL_GetTick(),
-//		             __get_PRIMASK());
-//
-//		__enable_irq();
-//
-//		debug_printf("After enable irq, tick=%lu primask=%lu\r\n",
-//		             HAL_GetTick(),
-//		             __get_PRIMASK());
-//		for (int i = 0; i < 3; i++) {
-//		        debug_printf("In for loop of 3 blinks\r\n");
-//		        HAL_GPIO_TogglePin(LD2_GPIO_Port, LD2_Pin);
-//		        debug_printf("after first toggle before delay\r\n");
-//		        HAL_Delay(150);
-//		        debug_printf("after first toggle and delay\r\n");
-//		        HAL_GPIO_TogglePin(LD2_GPIO_Port, LD2_Pin);
-//		        HAL_Delay(150);
-//		        debug_printf("after second toggle\r\n");
-//		    }
 	}else{
 		debug_printf("CAN INIT FAILED\r\n");
 		Error_Handler();
 	}
-  	debug_printf("before lsm6ds3tr init\r\n");
   	lsm6ds3tr_init_driver(&hi2c3);
-  	debug_printf("after lsm6ds3tr init\r\n");
   	HAL_UART_Receive_IT(&huart2, rx_data, 1);
-  	debug_printf("after hal_uart_receive_it \r\n");
 
   // Blocking calibration (~0.3 s). Keep the sensor stationary.
-  	debug_printf("before calibrate\r\n");
   	lsm6ds3tr_calibrate();
-  	debug_printf("after calibrate\r\n");
 
   uint32_t last_tick = HAL_GetTick();
   /* USER CODE END 2 */
@@ -226,12 +196,9 @@ int main(void){
   while (1)
   {
     /* USER CODE BEGIN 3 */
-//	  debug_printf("in while loop\r\n");
     if (cmd_ready){
       cmd_ready = 0;
-//      debug_printf("about to process command\r\n");
       process_command();
-//      debug_printf("command processed\r\n");
     }
 
      /*
@@ -241,11 +208,9 @@ int main(void){
      * the motor_status acknowledgement sent by handle_estop().
      */
     if (!g_estop_active && (HAL_GetTick() - last_tick) >= 2){
-//    	debug_printf("about to send imu data\r\n");
       last_tick = HAL_GetTick();
       CAN_Send_IMU_Data();
       lsm6ds3tr_init_dma_read();
-//      debug_printf("imu data sent\r\n");
     }
 
     /*
@@ -254,9 +219,7 @@ int main(void){
      * work during a burst of CAN traffic. At 500 Hz TX and low bus
      * load, the ring buffer never accumulates more than a few frames.
      */
-//    debug_printf("BEFORE can poll incoming\r\n");
     CAN_Poll_Incoming();
-//    debug_printf("AFTER can poll incoming\r\n");
 
 
     /*
@@ -273,24 +236,20 @@ int main(void){
  
 
     // Periodic status dump every 1s
-    if (HAL_GetTick() - g_last_status_tick >= 10000){
-    	debug_printf("fifo0_cb=%lu\r\n", g_fifo0_cb_count);
-    	debug_printf("[FIFO0] cb=%lu ok=%lu fail=%lu fill=%lu id=0x%lX ext=%u dlc=%u\r\n",
-    	             g_fifo0_cb_count,
-    	             g_fifo0_get_ok,
-    	             g_fifo0_get_fail,
-    	             g_fifo0_fill_at_entry,
-    	             g_fifo0_last_id,
-    	             g_fifo0_last_ext,
-    	             g_fifo0_last_dlc);
-      debug_printf("[STATUS] estop=%d motor_active=%d cmd=%.3fA rx=%lu | "
-                   "pos=%.1f spd=%.0f cur=%.2fA temp=%dC err=%d(%s)\r\n",
-                   g_estop_active, g_motor_active, g_active_current,
-                   g_motor_rx_count,
-                   g_motor_status.position, g_motor_status.speed,
-                   g_motor_status.current,  g_motor_status.temperature,
-                   g_motor_status.error,
-                   motor_error_to_string(g_motor_status.error));
+    if (HAL_GetTick() - g_last_status_tick >= 5000){
+    	debug_printf("[STATUS] estop=%d motor_active=%d cmd=%.3fA motor_rx=%lu tx_drop=%lu | "
+    	                 "pos=%.1f spd=%.0f cur=%.2fA temp=%dC err=%d(%s)\r\n",
+    	                 g_estop_active,
+    	                 g_motor_active,
+    	                 g_active_current,
+    	                 g_motor_rx_count,
+    	                 g_can_tx_dropped,
+    	                 g_motor_status.position,
+    	                 g_motor_status.speed,
+    	                 g_motor_status.current,
+    	                 g_motor_status.temperature,
+    	                 g_motor_status.error,
+    	                 motor_error_to_string(g_motor_status.error));
       g_last_status_tick = HAL_GetTick();
     }
 
@@ -581,22 +540,26 @@ static void CAN_Poll_Incoming(void)
   CanFrame frame;
   if (!can_recv(&frame)) return;   /* ring buffer empty */
 
-/* ── Motor feedback (extended CAN frame from AK70-9) ── */
+  /* ── Motor feedback: extended CAN frame from this MCU's motor ── */
   if (frame.is_extended){
-    g_motor_rx_count++;
-    motor_receive(&g_motor_status, frame.data);
-    debug_printf("MOTOR pos=%.1f spd=%.0f cur=%.2f temp=%d err=%d(%s)\r\n",
-                 g_motor_status.position, g_motor_status.speed,
-                 g_motor_status.current,  g_motor_status.temperature,
-                 g_motor_status.error,
-                 motor_error_to_string(g_motor_status.error));
-    // If the motor driver is reporting a fault, zero it immediately.
-    if (g_motor_status.error != MOTOR_ERROR_NONE && !g_estop_active){
-            debug_printf("FAULT: %s — zeroing motor\r\n",
-                         motor_error_to_string(g_motor_status.error));
-            handle_estop(g_motor_status.error);
-        }
-    return;
+      uint8_t motor_id = (uint8_t)(frame.id & 0xFFU);
+
+      /* Ignore feedback from other motors on the bus */
+      if (motor_id != MY_MOTOR_CAN_ID) {
+          return;
+      }
+
+      g_motor_rx_count++;
+      motor_receive(&g_motor_status, frame.data);
+
+      /* If the motor driver reports a fault, zero it immediately. */
+      if (g_motor_status.error != MOTOR_ERROR_NONE && !g_estop_active){
+          debug_printf("FAULT: %s, zeroing motor\r\n",
+                       motor_error_to_string(g_motor_status.error));
+          handle_estop(g_motor_status.error);
+      }
+
+      return;
   }
 
   /* ── Standard frames: check message type ── */
