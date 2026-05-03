@@ -33,19 +33,6 @@
 #define REG_OUTX_L_G		0x22 // gyro x-axis LB (starts at 0x22 and goes to 0x27 for gyro)
 #define REG_OUTX_L_XL		0x28 // accel x-axis LB (starts at 0x28 and goes to 0x2D for accel)
 
-// CAN Standard IDs
-#define ACCEL_HIP_L			0x123
-#define GYRO_HIP_L			0x124
-
-#define ACCEL_HIP_R			0x125
-#define GYRO_HIP_R			0x126
-
-#define ACCEL_KNEE_L		0x127
-#define GYRO_KNEE_L			0x128
-
-#define ACCEL_KNEE_R		0x129
-#define GYRO_KNEE_R			0x130
-
 typedef enum
 {
 	SENSOR_STATE_CONNECTED,
