@@ -8,7 +8,11 @@ All values are little-endian int16 scaled by 100.
 
 import struct
 import can
-from . import can_common
+
+try:
+    from . import can_common
+except ImportError:
+    import can_common
 
 
 def send_imu_accel(bus: can.Bus, src_node: int, ax: float, ay: float, az: float):

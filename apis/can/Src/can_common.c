@@ -120,6 +120,7 @@ int can_send_std(uint16_t std_id, const uint8_t *data, uint8_t dlc) {
     if (!g_hcan) return 0;
     if (std_id > 0x7FF) return 0;
     if (dlc > 8) return 0;
+    if (HAL_CAN_GetTxMailboxesFreeLevel(g_hcan) == 0) return 0;
 
     CAN_TxHeaderTypeDef hdr;
     memset(&hdr, 0, sizeof(hdr));
@@ -137,6 +138,7 @@ int can_send_ext(uint32_t ext_id, const uint8_t *data, uint8_t dlc) {
     if (!g_hcan) return 0;
     if (ext_id > 0x1FFFFFFFU) return 0;
     if (dlc > 8) return 0;
+    if (HAL_CAN_GetTxMailboxesFreeLevel(g_hcan) == 0) return 0;
 
     CAN_TxHeaderTypeDef hdr;
     memset(&hdr, 0, sizeof(hdr));
