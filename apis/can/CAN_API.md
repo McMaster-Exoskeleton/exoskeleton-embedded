@@ -644,7 +644,7 @@ candump can0 -c -t a
 ### "No messages received"
 
 - **Is the bus up?** Run `ip link show can0` — state should be "UP".
-- **Bitrate match?** All nodes must use 1 Mbit/s. STM32 config: prescaler 6, BS1 11TQ, BS2 2TQ.
+- **Bitrate match?** All nodes must use 1 Mbit/s. STM32 bit-timing depends on PCLK1: with PCLK1 = 84 MHz use prescaler 6, BS1 11TQ, BS2 2TQ (torque-controller, F429); with PCLK1 = 42 MHz use prescaler 3, BS1 10TQ, BS2 3TQ (joint-controller, F446). Both yield a 14-tq, 1 us bit time.
 - **Wiring:** Check CAN_H to CAN_H, CAN_L to CAN_L. No crossover.
 - **Termination:** At least one 120-ohm resistor between CAN_H and CAN_L.
 - **Power:** All nodes must be powered and running.
