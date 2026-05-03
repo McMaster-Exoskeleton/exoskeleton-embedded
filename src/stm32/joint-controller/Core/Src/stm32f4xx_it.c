@@ -56,6 +56,7 @@
 
 /* External variables --------------------------------------------------------*/
 extern DMA_HandleTypeDef hdma_i2c3_rx;
+extern CAN_HandleTypeDef hcan1;
 extern UART_HandleTypeDef huart2;
 /* USER CODE BEGIN EV */
 
@@ -228,5 +229,19 @@ void USART2_IRQHandler(void)
 }
 
 /* USER CODE BEGIN 1 */
+void CAN1_RX0_IRQHandler(void)
+{
+  HAL_CAN_IRQHandler(&hcan1);
+}
+
+void CAN1_RX1_IRQHandler(void)
+{
+  HAL_CAN_IRQHandler(&hcan1);
+}
+
+void CAN1_SCE_IRQHandler(void)
+{
+  HAL_CAN_IRQHandler(&hcan1);
+}
 
 /* USER CODE END 1 */
