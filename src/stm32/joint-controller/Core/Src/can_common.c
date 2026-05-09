@@ -7,7 +7,6 @@
  */
 
 #include "can_common.h"
-#include "error_log.h"
 #include <string.h>
 
 /* ── Internal State ── */
@@ -24,10 +23,7 @@ static void rb_init(CanRxRingBuffer *rb) {
 }
 
 static int rb_push(CanRxRingBuffer *rb, const CanFrame *frame) {
-    if (rb->count >= CAN_RX_BUFFER_CAPACITY) {
-        log_can_rx_overflow_count++;
-        return 0;
-    }
+    if (rb->count >= CAN_RX_BUFFER_CAPACITY) return 0;
     rb->buf[rb->head] = *frame;
     rb->head = (rb->head + 1) % CAN_RX_BUFFER_CAPACITY;
     rb->count++;

@@ -24,13 +24,11 @@
 /* USER CODE BEGIN Includes */
 #include <stdio.h>
 #include <string.h>
+#include <stdarg.h>
 #include "can_common.h"
 #include "can_imu.h"
 #include "can_motor.h"
-#include "can_system.h"
 #include "can/ak70_9.h"
-#include "error_log.h"
-#include "imu_buffer.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -41,34 +39,20 @@
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
 /*
- * Node configuration matches the torque-controller project:
- *   Left Hip  = 1, Right Hip  = 2,
- *   Left Knee = 3, Right Knee = 4
+ * Per-board configuration. Change before flashing each joint.
+ *   Left Hip = 1, Right Hip = 2, Left Knee = 3, Right Knee = 4
  */
-#define MY_NODE_ID CAN_NODE_RIGHT_HIP
-
-/*
- * VESC CAN ID for the AK70-9 attached to this joint. Change per board to
- * match the controller setting on the paired motor. Default 104; assign
- * unique IDs per motor on a shared bus.
- */
+#define MY_NODE_ID          2
 #define MY_MOTOR_CAN_ID     106
 
-/*
- * Torque-to-current conversion (AK70-9 KV60).
- *   Output torque = Kt * gear_ratio * Iq
- *   Iq = desired_torque / (Kt * gear_ratio)
- */
+/* AK70-9 KV60: torque = Kt * gear_ratio * Iq -> Iq = torque / KT_EFFECTIVE */
 #define AK70_9_KT           0.159f
 #define AK70_9_GEAR_RATIO   9.0f
-#define KT_EFFECTIVE        (AK70_9_KT * AK70_9_GEAR_RATIO)  /* 1.431 Nm/A */
+#define KT_EFFECTIVE        (AK70_9_KT * AK70_9_GEAR_RATIO)
 
-/* Re-send interval to keep the VESC current loop alive between commands. */
-#define CURRENT_REFRESH_MS  50
-
-/* Test-safe current clamp (A). Mirrors torque-controller. */
-#define CURRENT_LIMIT       5.0f
-
+#define CURRENT_REFRESH_MS  50      /* prevents VESC current-loop timeout */
+#define CURRENT_LIMIT       5.0f    /* test-safe current clamp (A) */
+#define IMU_PERIOD_MS       5       /* 200 Hz IMU send */
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -85,28 +69,12 @@ DMA_HandleTypeDef hdma_i2c3_rx;
 UART_HandleTypeDef huart2;
 
 /* USER CODE BEGIN PV */
-uint8_t rx_data[1];
-uint8_t rx_buffer[100];
-uint8_t rx_index = 0;
-/* READALL streams one line at a time, so tx_buffer only needs to hold one
-   formatted reading (~60 chars). 256 bytes gives comfortable margin. */
-uint8_t tx_buffer[256];
-volatile uint8_t cmd_ready = 0;
-
-/* Motor control state (mirrors torque-controller). */
 static MotorStatus motor_status      = {0};
-static float       active_current    = 0.0f;
-static uint8_t     motor_active      = 0;
-static uint8_t     estop_active      = 0;
-static uint32_t    last_refresh_tick = 0;
-
-/* Edge-trigger state for real-time fault logging. */
-static SensorState_t prev_imu_state          = SENSOR_STATE_LOST;
-static uint8_t       prev_motor_error        = 0;
-static uint8_t       motor_feedback_warned   = 0;
-static uint8_t       first_torque_received   = 0;
-static uint32_t      last_motor_rx_tick      = 0;
-static uint32_t      last_imu_check_tick     = 0;
+static float      active_current     = 0.0f;
+static uint8_t    motor_active       = 0;
+static uint8_t    estop_active       = 0;
+static uint32_t   last_refresh_tick  = 0;
+static uint32_t   ext_rx_count       = 0;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -117,8 +85,7 @@ static void MX_USART2_UART_Init(void);
 static void MX_CAN1_Init(void);
 static void MX_I2C3_Init(void);
 /* USER CODE BEGIN PFP */
-static void process_command(void);
-void CAN_Send_IMU_Data(void);
+static void CAN_Send_IMU_Data(void);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -129,6 +96,21 @@ static float clampf(float val, float lo, float hi)
   if (val > hi) return hi;
   return val;
 }
+
+static void debug_print(const char *msg)
+{
+  HAL_UART_Transmit(&huart2, (uint8_t *)msg, (uint16_t)strlen(msg), 50);
+}
+
+static void debug_printf(const char *fmt, ...)
+{
+  char buf[128];
+  va_list args;
+  va_start(args, fmt);
+  int n = vsnprintf(buf, sizeof(buf), fmt, args);
+  va_end(args);
+  if (n > 0) HAL_UART_Transmit(&huart2, (uint8_t *)buf, (uint16_t)n, 50);
+}
 /* USER CODE END 0 */
 
 /**
@@ -137,188 +119,85 @@ static float clampf(float val, float lo, float hi)
  */
 int main(void)
 {
-
-  /* USER CODE BEGIN 1 */
-
-  /* USER CODE END 1 */
-
-  /* MCU Configuration--------------------------------------------------------*/
-
-  /* Reset of all peripherals, Initializes the Flash interface and the Systick. */
   HAL_Init();
-
-  /* USER CODE BEGIN Init */
-
-  /* USER CODE END Init */
-
-  /* Configure the system clock */
   SystemClock_Config();
 
-  /* USER CODE BEGIN SysInit */
-
-  /* USER CODE END SysInit */
-
-  /* Initialize all configured peripherals */
   MX_GPIO_Init();
   MX_DMA_Init();
   MX_USART2_UART_Init();
   MX_CAN1_Init();
   MX_I2C3_Init();
-  /* USER CODE BEGIN 2 */
-  log_init(&huart2, &hcan1);
-  log_print("\r\n[BOOT] joint-controller starting\r\n");
-  log_printf("[BOOT] node=%u motor=%u\r\n",
-             (unsigned)MY_NODE_ID, (unsigned)MY_MOTOR_CAN_ID);
 
+  /* USER CODE BEGIN 2 */
   if (!can_common_init(&hcan1, MY_NODE_ID))
   {
-    log_print("[FATAL] CAN init failed\r\n");
-    Error_Handler();
+    debug_print("CAN INIT FAILED\r\n");
+    HAL_GPIO_WritePin(LD2_GPIO_Port, LD2_Pin, GPIO_PIN_SET);
+    while (1) {}
   }
-  log_print("[INIT] CAN ok\r\n");
-
-  // Narrow the extended-frame filter to just our motor's CAN ID. Without this,
-  // every other joint's VESC feedback would land in our RX ring on a shared bus.
-  if (!can_set_motor_filter(MY_MOTOR_CAN_ID))
-    log_print("[ERR] motor RX filter config failed\r\n");
+  can_set_motor_filter(MY_MOTOR_CAN_ID);
+  debug_printf("CAN OK node=%u motor=%u\r\n",
+               (unsigned)MY_NODE_ID, (unsigned)MY_MOTOR_CAN_ID);
 
   lsm6ds3tr_init_driver(&hi2c3);
-  if (lsm6ds3tr_check_connection())
+  if (!lsm6ds3tr_check_connection())
   {
-    log_print("[INIT] IMU connected\r\n");
-    prev_imu_state = SENSOR_STATE_CONNECTED;
+    debug_print("IMU NOT FOUND\r\n");
+    HAL_GPIO_WritePin(LD2_GPIO_Port, LD2_Pin, GPIO_PIN_SET);
+    while (1) {}
   }
-  else
-  {
-    log_print("[FATAL] IMU not detected (WHO_AM_I mismatch)\r\n");
-    Error_Handler();
-  }
-
-  HAL_UART_Receive_IT(&huart2, rx_data, 1);
-
-  log_print("[INIT] calibrating IMU (~0.3 s, keep sensor still)\r\n");
   lsm6ds3tr_calibrate();
-  log_print("[INIT] ready\r\n");
+  debug_print("READY\r\n");
 
-  uint32_t last_tick = HAL_GetTick();
-  last_imu_check_tick = HAL_GetTick();
+  uint32_t last_imu_tick    = HAL_GetTick();
+  uint32_t last_status_tick = HAL_GetTick();
   /* USER CODE END 2 */
 
   /* Infinite loop */
-  /* USER CODE BEGIN WHILE */
   while (1)
   {
-    /* USER CODE END WHILE */
+    /* USER CODE BEGIN WHILE */
 
-    /* USER CODE BEGIN 3 */
-
-    if (cmd_ready)
-    {
-      cmd_ready = 0;
-      process_command();
-    }
-
-    // Drain the CAN RX ring buffer. Three frame classes can land here:
-    //   - Extended: VESC feedback from our motor; refresh local motor_status.
-    //   - ESTOP: zero current immediately and latch until power-cycle.
-    //   - TORQUE_CMD: convert Nm to amps and command the motor via VESC.
+    /* ── Drain CAN RX ──
+     * NO per-frame logging. At two nodes with VESC traffic, anything
+     * faster than 1 Hz over UART blocks the main loop and breaks the
+     * 50 ms motor refresh.
+     */
     CanFrame rx_frame;
     while (can_recv(&rx_frame))
     {
       if (rx_frame.is_extended)
       {
-        // Defensive: confirm this VESC frame actually belongs to OUR motor.
-        // can_set_motor_filter() should already filter at the hardware level;
-        // if this check ever trips, the filter math is wrong or the filter
-        // bank got reconfigured somewhere unexpected.
-        uint8_t frame_motor_id = (uint8_t)(rx_frame.id & 0xFFu);
-        if (frame_motor_id != MY_MOTOR_CAN_ID)
-        {
-          static uint8_t leak_warned = 0;
-          if (!leak_warned)
-          {
-            log_printf("[CAN] filter leak: ext id=0x%08lX motor=0x%02X "
-                       "(expected 0x%02X) — dropping\r\n",
-                       (unsigned long)rx_frame.id,
-                       (unsigned)frame_motor_id,
-                       (unsigned)MY_MOTOR_CAN_ID);
-            leak_warned = 1;
-          }
-          continue;
-        }
-
+        ext_rx_count++;
         motor_receive(&motor_status, rx_frame.data);
-        last_motor_rx_tick = HAL_GetTick();
-
-        if (motor_feedback_warned)
-        {
-          log_print("[MOTOR] feedback resumed\r\n");
-          motor_feedback_warned = 0;
-        }
-        if (motor_status.error != prev_motor_error)
-        {
-          log_printf("[MOTOR] error %u -> %u (%s)\r\n",
-                     (unsigned)prev_motor_error,
-                     (unsigned)motor_status.error,
-                     motor_error_to_string(motor_status.error));
-          prev_motor_error = motor_status.error;
-        }
-        continue;
       }
-
-      uint8_t msg_type = can_get_msg_type((uint16_t)rx_frame.id);
-
-      if (msg_type == CAN_MSG_ESTOP)
+      else
       {
-        uint8_t reason = 0;
-        can_parse_estop(&rx_frame, &reason);
-        if (!estop_active)
-        {
-          log_printf("[ESTOP] latched src=%u reason=%u\r\n",
-                     (unsigned)can_get_src_node((uint16_t)rx_frame.id),
-                     (unsigned)reason);
-        }
-        active_current = 0.0f;
-        motor_active   = 0;
-        estop_active   = 1;
-        comm_can_set_current(MY_MOTOR_CAN_ID, 0.0f);
-      }
-      else if (msg_type == CAN_MSG_TORQUE_CMD && !estop_active)
-      {
-        float torque_nm;
-        if (can_parse_torque_cmd(&rx_frame, &torque_nm))
-        {
-          float current = torque_nm / KT_EFFECTIVE;
-          active_current = clampf(current, -CURRENT_LIMIT, CURRENT_LIMIT);
-          if (!motor_active)
-          {
-            // Baseline the stale-feedback timer so we don't immediately warn
-            // before the VESC has had a chance to start streaming feedback.
-            last_motor_rx_tick    = HAL_GetTick();
-            motor_feedback_warned = 0;
-          }
-          motor_active = 1;
-          comm_can_set_current(MY_MOTOR_CAN_ID, active_current);
-          last_refresh_tick = HAL_GetTick();
+        uint8_t msg_type = can_get_msg_type((uint16_t)rx_frame.id);
 
-          if (!first_torque_received)
-          {
-            log_printf("[CAN] first TORQUE_CMD: %d mNm -> %d mA\r\n",
-                       (int)(torque_nm * 1000.0f),
-                       (int)(active_current * 1000.0f));
-            first_torque_received = 1;
-          }
-        }
-        else
+        if (msg_type == CAN_MSG_ESTOP)
         {
-          log_printf("[CAN] TORQUE_CMD parse failed (DLC=%u)\r\n",
-                     (unsigned)rx_frame.dlc);
+          active_current = 0.0f;
+          motor_active   = 0;
+          estop_active   = 1;
+          comm_can_set_current(MY_MOTOR_CAN_ID, 0.0f);
+        }
+        else if (msg_type == CAN_MSG_TORQUE_CMD && !estop_active)
+        {
+          float torque_nm;
+          if (can_parse_torque_cmd(&rx_frame, &torque_nm))
+          {
+            float current = torque_nm / KT_EFFECTIVE;
+            active_current = clampf(current, -CURRENT_LIMIT, CURRENT_LIMIT);
+            motor_active = 1;
+            comm_can_set_current(MY_MOTOR_CAN_ID, active_current);
+            last_refresh_tick = HAL_GetTick();
+          }
         }
       }
     }
 
-    // Re-send the active current at CURRENT_REFRESH_MS to prevent the VESC
-    // current-loop watchdog from timing out between commands.
+    /* ── Refresh: re-send current command every 50 ms to prevent VESC timeout ── */
     if (motor_active &&
         (HAL_GetTick() - last_refresh_tick >= CURRENT_REFRESH_MS))
     {
@@ -326,44 +205,29 @@ int main(void)
       last_refresh_tick = HAL_GetTick();
     }
 
-    // Periodic IMU presence check (~2 Hz, edge-logged on state change).
-    if ((HAL_GetTick() - last_imu_check_tick) >= 500)
+    /* ── 200 Hz IMU send + DMA read ── */
+    if ((HAL_GetTick() - last_imu_tick) >= IMU_PERIOD_MS)
     {
-      last_imu_check_tick = HAL_GetTick();
-      lsm6ds3tr_check_connection();
-      LSM6DS3TR_Data_t *imu_dbg = lsm6ds3tr_get_data();
-      if (imu_dbg->state != prev_imu_state)
-      {
-        log_printf("[IMU] state %s\r\n",
-                   imu_dbg->state == SENSOR_STATE_CONNECTED ? "CONNECTED" : "LOST");
-        prev_imu_state = imu_dbg->state;
-      }
-    }
-
-    // If we're commanding a current but feedback has gone silent for >500 ms,
-    // warn once. Common cause is motor power down or a yanked CAN cable.
-    if (motor_active && !motor_feedback_warned && last_motor_rx_tick != 0 &&
-        (HAL_GetTick() - last_motor_rx_tick > 500))
-    {
-      log_print("[MOTOR] no feedback for >500 ms — check power/wiring/CAN ID\r\n");
-      motor_feedback_warned = 1;
-    }
-
-    log_periodic_check();
-
-    // Non-blocking DMA read; result is processed in HAL_I2C_MemRxCpltCallback
-    // which also pushes to the circular buffer and updates imu_data.
-
-    if ((HAL_GetTick() - last_tick) >= 2)
-    {
-      last_tick = HAL_GetTick();
-
+      last_imu_tick = HAL_GetTick();
       CAN_Send_IMU_Data();
-
       lsm6ds3tr_init_dma_read();
     }
+
+    /* ── 1 Hz status dump (mirrors torque-controller) ── */
+    if (HAL_GetTick() - last_status_tick >= 1000)
+    {
+      debug_printf("[STATUS] active=%d estop=%d cmd=%.3fA motor_rx=%lu | "
+                   "pos=%.1f spd=%.0f cur=%.2fA temp=%dC err=%d\r\n",
+                   motor_active, estop_active, active_current,
+                   (unsigned long)ext_rx_count,
+                   motor_status.position, motor_status.speed,
+                   motor_status.current, motor_status.temperature,
+                   motor_status.error);
+      last_status_tick = HAL_GetTick();
+    }
+
+    /* USER CODE END WHILE */
   }
-  /* USER CODE END 3 */
 }
 
 /**
@@ -375,14 +239,9 @@ void SystemClock_Config(void)
   RCC_OscInitTypeDef RCC_OscInitStruct = {0};
   RCC_ClkInitTypeDef RCC_ClkInitStruct = {0};
 
-  /** Configure the main internal regulator output voltage
-   */
   __HAL_RCC_PWR_CLK_ENABLE();
   __HAL_PWR_VOLTAGESCALING_CONFIG(PWR_REGULATOR_VOLTAGE_SCALE3);
 
-  /** Initializes the RCC Oscillators according to the specified parameters
-   * in the RCC_OscInitTypeDef structure.
-   */
   RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSI;
   RCC_OscInitStruct.HSIState = RCC_HSI_ON;
   RCC_OscInitStruct.HSICalibrationValue = RCC_HSICALIBRATION_DEFAULT;
@@ -398,8 +257,6 @@ void SystemClock_Config(void)
     Error_Handler();
   }
 
-  /** Initializes the CPU, AHB and APB buses clocks
-   */
   RCC_ClkInitStruct.ClockType = RCC_CLOCKTYPE_HCLK | RCC_CLOCKTYPE_SYSCLK | RCC_CLOCKTYPE_PCLK1 | RCC_CLOCKTYPE_PCLK2;
   RCC_ClkInitStruct.SYSCLKSource = RCC_SYSCLKSOURCE_PLLCLK;
   RCC_ClkInitStruct.AHBCLKDivider = RCC_SYSCLK_DIV1;
@@ -414,19 +271,9 @@ void SystemClock_Config(void)
 
 /**
  * @brief CAN1 Initialization Function
- * @param None
- * @retval None
  */
 static void MX_CAN1_Init(void)
 {
-
-  /* USER CODE BEGIN CAN1_Init 0 */
-
-  /* USER CODE END CAN1_Init 0 */
-
-  /* USER CODE BEGIN CAN1_Init 1 */
-
-  /* USER CODE END CAN1_Init 1 */
   hcan1.Instance = CAN1;
   hcan1.Init.Prescaler = 3;
   hcan1.Init.Mode = CAN_MODE_NORMAL;
@@ -436,10 +283,6 @@ static void MX_CAN1_Init(void)
   hcan1.Init.TimeTriggeredMode = DISABLE;
   hcan1.Init.AutoBusOff = ENABLE;
   hcan1.Init.AutoWakeUp = DISABLE;
-  // AutoRetransmission is enabled to keep TORQUE_CMD reception reliable on a
-  // noisy bus. Tradeoff: a 500 Hz IMU frame that loses arbitration may be
-  // retried after the next sample is already due. Acceptable while bus load
-  // stays under ~50%; revisit (e.g. single-shot mode) if utilization climbs.
   hcan1.Init.AutoRetransmission = ENABLE;
   hcan1.Init.ReceiveFifoLocked = DISABLE;
   hcan1.Init.TransmitFifoPriority = DISABLE;
@@ -447,26 +290,13 @@ static void MX_CAN1_Init(void)
   {
     Error_Handler();
   }
-  /* USER CODE BEGIN CAN1_Init 2 */
-
-  /* USER CODE END CAN1_Init 2 */
 }
 
 /**
  * @brief I2C3 Initialization Function
- * @param None
- * @retval None
  */
 static void MX_I2C3_Init(void)
 {
-
-  /* USER CODE BEGIN I2C3_Init 0 */
-
-  /* USER CODE END I2C3_Init 0 */
-
-  /* USER CODE BEGIN I2C3_Init 1 */
-
-  /* USER CODE END I2C3_Init 1 */
   hi2c3.Instance = I2C3;
   hi2c3.Init.ClockSpeed = 400000;
   hi2c3.Init.DutyCycle = I2C_DUTYCYCLE_2;
@@ -480,26 +310,13 @@ static void MX_I2C3_Init(void)
   {
     Error_Handler();
   }
-  /* USER CODE BEGIN I2C3_Init 2 */
-
-  /* USER CODE END I2C3_Init 2 */
 }
 
 /**
  * @brief USART2 Initialization Function
- * @param None
- * @retval None
  */
 static void MX_USART2_UART_Init(void)
 {
-
-  /* USER CODE BEGIN USART2_Init 0 */
-
-  /* USER CODE END USART2_Init 0 */
-
-  /* USER CODE BEGIN USART2_Init 1 */
-
-  /* USER CODE END USART2_Init 1 */
   huart2.Instance = USART2;
   huart2.Init.BaudRate = 115200;
   huart2.Init.WordLength = UART_WORDLENGTH_8B;
@@ -512,9 +329,6 @@ static void MX_USART2_UART_Init(void)
   {
     Error_Handler();
   }
-  /* USER CODE BEGIN USART2_Init 2 */
-
-  /* USER CODE END USART2_Init 2 */
 }
 
 /**
@@ -522,330 +336,77 @@ static void MX_USART2_UART_Init(void)
  */
 static void MX_DMA_Init(void)
 {
-
-  /* DMA controller clock enable */
   __HAL_RCC_DMA1_CLK_ENABLE();
 
-  /* DMA interrupt init */
-  /* DMA1_Stream1_IRQn interrupt configuration */
   HAL_NVIC_SetPriority(DMA1_Stream1_IRQn, 0, 0);
   HAL_NVIC_EnableIRQ(DMA1_Stream1_IRQn);
 }
 
 /**
  * @brief GPIO Initialization Function
- * @param None
- * @retval None
  */
 static void MX_GPIO_Init(void)
 {
   GPIO_InitTypeDef GPIO_InitStruct = {0};
-  /* USER CODE BEGIN MX_GPIO_Init_1 */
 
-  /* USER CODE END MX_GPIO_Init_1 */
-
-  /* GPIO Ports Clock Enable */
   __HAL_RCC_GPIOC_CLK_ENABLE();
   __HAL_RCC_GPIOH_CLK_ENABLE();
   __HAL_RCC_GPIOA_CLK_ENABLE();
   __HAL_RCC_GPIOB_CLK_ENABLE();
 
-  /*Configure GPIO pin Output Level */
   HAL_GPIO_WritePin(LD2_GPIO_Port, LD2_Pin, GPIO_PIN_RESET);
 
-  /*Configure GPIO pin : B1_Pin */
   GPIO_InitStruct.Pin = B1_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_IT_FALLING;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   HAL_GPIO_Init(B1_GPIO_Port, &GPIO_InitStruct);
 
-  /*Configure GPIO pin : LD2_Pin */
   GPIO_InitStruct.Pin = LD2_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(LD2_GPIO_Port, &GPIO_InitStruct);
-
-  /* USER CODE BEGIN MX_GPIO_Init_2 */
-
-  /* USER CODE END MX_GPIO_Init_2 */
 }
 
 /* USER CODE BEGIN 4 */
 
 /**
- * @brief Encode and transmit the latest IMU reading with the shared CAN API.
- *
- * The shared API packs accel and gyro vectors as little-endian signed 16-bit
- * integers scaled by 100 and uses the torque-controller 11-bit ID layout:
- * message type, source node, destination/context.
+ * @brief Encode + transmit the latest IMU reading. Motor position rides
+ *        along in the gyro frame's spare 2 bytes (DLC 8) for shared timestamp.
  */
-void CAN_Send_IMU_Data(void)
+static void CAN_Send_IMU_Data(void)
 {
   LSM6DS3TR_Data_t *imu = lsm6ds3tr_get_data();
 
-  if (imu->state != SENSOR_STATE_CONNECTED)
-    return;
+  if (imu->state != SENSOR_STATE_CONNECTED) return;
+  if (HAL_CAN_GetTxMailboxesFreeLevel(&hcan1) < 2) return;
 
-  if (HAL_CAN_GetTxMailboxesFreeLevel(&hcan1) < 2)
-    return;
-
-  float ax, ay, az;
-  float gx, gy, gz;
-
-  // Disable DMA IRQ temporarily while reading all data from IMU
   HAL_NVIC_DisableIRQ(DMA1_Stream1_IRQn);
-
-  ax = imu->accel.filt_x;
-  ay = imu->accel.filt_y;
-  az = imu->accel.filt_z;
-  gx = imu->gyro.filt_x;
-  gy = imu->gyro.filt_y;
-  gz = imu->gyro.filt_z;
-
+  float ax = imu->accel.filt_x;
+  float ay = imu->accel.filt_y;
+  float az = imu->accel.filt_z;
+  float gx = imu->gyro.filt_x;
+  float gy = imu->gyro.filt_y;
+  float gz = imu->gyro.filt_z;
   HAL_NVIC_EnableIRQ(DMA1_Stream1_IRQn);
 
-  int accel_ok = can_send_imu_accel(MY_NODE_ID, ax, ay, az);
-  int gyro_ok = can_send_imu_gyro(MY_NODE_ID, gx, gy, gz);
-
-  if (!accel_ok || !gyro_ok)
-  {
-    HAL_GPIO_TogglePin(LD2_GPIO_Port, LD2_Pin);
-    log_can_tx_drop_count++;
-  }
-}
-
-/**
- * @brief HAL CAN error callback. Bumps the aggregate counter and the
- *        per-LEC (Last Error Code) histogram.
- *
- * HAL has already extracted the ESR LEC field into hcan->ErrorCode by the
- * time this fires (HAL_CAN_IRQHandler clears the raw LEC bits before
- * dispatching to us), so we read ErrorCode instead of ESR. The LEC bits
- * are sticky in ErrorCode — we clear them after reading so the next
- * callback sees only fresh errors.
- */
-void HAL_CAN_ErrorCallback(CAN_HandleTypeDef *hcan)
-{
-  log_can_err_isr_count++;
-
-  uint32_t code = hcan->ErrorCode;
-  if (code & HAL_CAN_ERROR_STF) log_can_lec_counts[1]++;  // Stuff
-  if (code & HAL_CAN_ERROR_FOR) log_can_lec_counts[2]++;  // Form
-  if (code & HAL_CAN_ERROR_ACK) log_can_lec_counts[3]++;  // Ack
-  if (code & HAL_CAN_ERROR_BR)  log_can_lec_counts[4]++;  // Bit recessive
-  if (code & HAL_CAN_ERROR_BD)  log_can_lec_counts[5]++;  // Bit dominant
-  if (code & HAL_CAN_ERROR_CRC) log_can_lec_counts[6]++;  // CRC
-
-  // Clear only the LEC sticky bits; preserve EWG/EPV/BOF/RX_FOV state for
-  // the periodic check to read separately.
-  hcan->ErrorCode &= ~(HAL_CAN_ERROR_STF | HAL_CAN_ERROR_FOR |
-                       HAL_CAN_ERROR_ACK | HAL_CAN_ERROR_BR  |
-                       HAL_CAN_ERROR_BD  | HAL_CAN_ERROR_CRC);
-}
-
-/**
- * @brief HAL I2C error callback. NACK / arbitration loss / bus errors from
- *        the LSM6DS3TR DMA path all funnel here. Aggregated at 1 Hz.
- */
-void HAL_I2C_ErrorCallback(I2C_HandleTypeDef *hi2c)
-{
-  UNUSED(hi2c);
-  log_i2c_err_count++;
-}
-
-/**
- * @brief UART RX interrupt callback — accumulates bytes into rx_buffer.
- *
- * One byte arrives per interrupt. A newline / carriage-return terminates the
- * command and sets cmd_ready so process_command() runs next loop cycle.
- */
-void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
-{
-  UNUSED(huart);
-
-  if (rx_data[0] == '\n' || rx_data[0] == '\r')
-  {
-    if (rx_index > 0)
-    {
-      rx_buffer[rx_index] = '\0';
-      cmd_ready = 1;
-      rx_index = 0;
-    }
-  }
-  else if (rx_index < sizeof(rx_buffer) - 1)
-  {
-    rx_buffer[rx_index++] = rx_data[0];
-  }
-
-  HAL_UART_Receive_IT(&huart2, rx_data, 1);
-}
-
-/**
- * @brief Process a complete UART command stored in rx_buffer.
- *
- * Commands:
- *   READ       - Latest filtered accel + gyro (single reading, same as before)
- *   READLATEST - Latest reading from the circular buffer
- *   READALL    - All 100 stored readings, oldest first
- *   STATUS     - IMU connection state
- *   REGISTER   - I2C device address
- *   CONFIG     - Gyro and accel control register values
- *   POWER      - Power configuration register value
- *
- * ISR-safety for READLATEST / READALL:
- *   The DMA completion callback (HAL_I2C_MemRxCpltCallback) writes to the
- *   circular buffer from ISR context.  To prevent a torn read we briefly
- *   disable the DMA interrupt while copying data out of the buffer, then
- *   re-enable it before transmitting — which can take time.
- */
-static void process_command(void)
-{
-  LSM6DS3TR_Data_t *imu = lsm6ds3tr_get_data();
-  uint16_t len = 0;
-
-  if (strcmp((char *)rx_buffer, "READ") == 0)
-  {
-    len = sprintf((char *)tx_buffer,
-                  "AX:%.2f AY:%.2f AZ:%.2f GX:%.2f GY:%.2f GZ:%.2f\r\n",
-                  imu->accel.filt_x, imu->accel.filt_y, imu->accel.filt_z,
-                  imu->gyro.filt_x, imu->gyro.filt_y, imu->gyro.filt_z);
-    HAL_UART_Transmit(&huart2, tx_buffer, len, 100);
-  }
-  else if (strcmp((char *)rx_buffer, "READLATEST") == 0)
-  {
-    IMUReading reading;
-
-    // Disable DMA interrupt while reading from the shared buffer
-    HAL_NVIC_DisableIRQ(DMA1_Stream1_IRQn);
-    int ok = imu_buffer_get_latest(&reading);
-    HAL_NVIC_EnableIRQ(DMA1_Stream1_IRQn);
-
-    if (ok)
-    {
-      len = sprintf((char *)tx_buffer,
-                    "LATEST AX:%.2f AY:%.2f AZ:%.2f GX:%.2f GY:%.2f GZ:%.2f\r\n",
-                    reading.ax, reading.ay, reading.az,
-                    reading.gx, reading.gy, reading.gz);
-    }
-    else
-    {
-      len = sprintf((char *)tx_buffer, "LATEST:EMPTY\r\n");
-    }
-    HAL_UART_Transmit(&huart2, tx_buffer, len, 200);
-  }
-
-// COMMENTED OUT BECAUSE NOW THAT WE ARE USING BUFFER ON PI
-// MIGHT BRING BACK BUFFER IF NEEDED BY CONTROLS
-
-/*  else if (strcmp((char *)rx_buffer, "READALL") == 0)
-  {
-    // Stack-allocate the snapshot to keep it off the heap.
-    // 100 * 24 bytes = 2400 bytes — requires _Min_Stack_Size >= 0x1000.
-    IMUReading snapshot[IMU_BUFFER_CAPACITY];
-    size_t count;
-
-    // Disable DMA interrupt while copying the entire buffer
-    HAL_NVIC_DisableIRQ(DMA1_Stream1_IRQn);
-    count = imu_buffer_get_all(snapshot);
-    HAL_NVIC_EnableIRQ(DMA1_Stream1_IRQn);
-
-    if (count == 0)
-    {
-      len = sprintf((char *)tx_buffer, "ALL:EMPTY\r\n");
-      HAL_UART_Transmit(&huart2, tx_buffer, len, 100);
-    }
-    else
-    {
-      // Header
-      len = sprintf((char *)tx_buffer, "ALL:COUNT=%u\r\n", (unsigned)count);
-      HAL_UART_Transmit(&huart2, tx_buffer, len, 100);
-
-      // Stream readings one at a time to avoid overflowing tx_buffer
-      for (size_t i = 0; i < count; ++i)
-      {
-        len = sprintf((char *)tx_buffer,
-                      "[%u]C: %d AX:%.2f AY:%.2f AZ:%.2f GX:%.2f GY:%.2f GZ:%.2f\r\n",
-                      (unsigned)i,
-                      snapshot[i].tick,
-                      snapshot[i].ax, snapshot[i].ay, snapshot[i].az,
-                      snapshot[i].gx, snapshot[i].gy, snapshot[i].gz);
-        // Timeout scaled to line length: 200 ms per line is generous at 115200
-        HAL_UART_Transmit(&huart2, tx_buffer, len, 200);
-      }
-    }
-  } */
-  else if (strcmp((char *)rx_buffer, "STATUS") == 0)
-  {
-    lsm6ds3tr_check_connection();
-    if (imu->state == SENSOR_STATE_CONNECTED)
-      len = sprintf((char *)tx_buffer, "STATUS:CONNECTED\r\n");
-    else
-      len = sprintf((char *)tx_buffer, "STATUS:LOST\r\n");
-    HAL_UART_Transmit(&huart2, tx_buffer, len, 100);
-  }
-  else if (strcmp((char *)rx_buffer, "CANERR") == 0)
-  {
-    uint32_t err = HAL_CAN_GetError(&hcan1);
-    len = sprintf((char *)tx_buffer, "CAN_ERR:0x%08lX TEC:%lu REC:%lu\r\n",
-                  err,
-                  (hcan1.Instance->ESR >> 16) & 0xFF,  // Transmit error counter
-                  (hcan1.Instance->ESR >> 24) & 0xFF); // Receive error counter
-    HAL_UART_Transmit(&huart2, tx_buffer, len, 100);
-  }
-  else if (strcmp((char *)rx_buffer, "REGISTER") == 0)
-  {
-    len = sprintf((char *)tx_buffer, "REGISTER:0x%02X\r\n", DEVICE_ADDRESS);
-    HAL_UART_Transmit(&huart2, tx_buffer, len, 100);
-  }
-  else if (strcmp((char *)rx_buffer, "CONFIG") == 0)
-  {
-    len = sprintf((char *)tx_buffer,
-                  "GYRO_CFG:0x%02X ACCEL_CFG:0x%02X\r\n",
-                  imu->gyro_config, imu->accel_config);
-    HAL_UART_Transmit(&huart2, tx_buffer, len, 100);
-  }
-  else if (strcmp((char *)rx_buffer, "POWER") == 0)
-  {
-    len = sprintf((char *)tx_buffer, "POWER_CFG:0x%02X\r\n", imu->power_config);
-    HAL_UART_Transmit(&huart2, tx_buffer, len, 100);
-  }
-  else
-  {
-    len = sprintf((char *)tx_buffer, "ERR:UNKNOWN_CMD\r\n");
-    HAL_UART_Transmit(&huart2, tx_buffer, len, 100);
-  }
+  can_send_imu_accel(MY_NODE_ID, ax, ay, az);
+  can_send_imu_gyro(MY_NODE_ID, gx, gy, gz, motor_status.position);
 }
 
 /* USER CODE END 4 */
 
 /**
  * @brief  This function is executed in case of error occurrence.
- * @retval None
  */
 void Error_Handler(void)
 {
-  /* USER CODE BEGIN Error_Handler_Debug */
-  log_print("[FATAL] Error_Handler invoked — halting\r\n");
   __disable_irq();
-  while (1)
-  {
-  }
-  /* USER CODE END Error_Handler_Debug */
+  while (1) {}
 }
+
 #ifdef USE_FULL_ASSERT
-/**
- * @brief  Reports the name of the source file and the source line number
- *         where the assert_param error has occurred.
- * @param  file: pointer to the source file name
- * @param  line: assert_param error line source number
- * @retval None
- */
 void assert_failed(uint8_t *file, uint32_t line)
 {
-  /* USER CODE BEGIN 6 */
-  /* User can add his own implementation to report the file name and line number,
-     ex: printf("Wrong parameters value: file %s on line %d\r\n", file, line) */
-  /* USER CODE END 6 */
 }
 #endif /* USE_FULL_ASSERT */

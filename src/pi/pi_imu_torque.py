@@ -49,11 +49,12 @@ except ImportError:
         sys.path.insert(0, str(REPO_ROOT))
     from apis.can.python import can_common, can_imu, can_motor, can_system
 
-# STM32 streams accel+gyro pairs at 500 Hz. The ML model wants 187 Hz, so we
+# STM32 streams accel+gyro pairs at 200 Hz (lowered from 500 Hz to reduce CAN
+# bus contention when both motors are active). The ML model wants 187 Hz, so we
 # downsample with a Bresenham-style accumulator below: every paired sample adds
 # `target` to an accumulator and emits one entry whenever it crosses `hz`. This
 # spreads the kept samples uniformly without timer jitter.
-hz = 500
+hz = 200
 target = 187
 
 # AK70-9 KV60 effective torque constant (Kt * gear_ratio). Used only to display
@@ -80,8 +81,9 @@ def make_joint_state():
         "queue": deque(maxlen=target),
         "temp_accel": None,
         "temp_gyro": None,
+        "temp_motor_pos": None,   # latest motor position from the gyro frame
         "timestamp": 0.0,
-        # Latest motor status snapshot (or None until a frame arrives)
+        # Latest full motor status snapshot (or None until a frame arrives)
         "motor": None,
     }
 
@@ -168,7 +170,9 @@ def process_msg(msg: can.Message):
             joint["temp_accel"] = can_imu.parse_imu_accel(msg)
             joint["timestamp"] = msg.timestamp * 1000.0
         elif msg_type == can_common.MSG_IMU_GYRO:
-            joint["temp_gyro"] = can_imu.parse_imu_gyro(msg)
+            gx, gy, gz, motor_pos = can_imu.parse_imu_gyro_pos(msg)
+            joint["temp_gyro"] = (gx, gy, gz)
+            joint["temp_motor_pos"] = motor_pos
         elif msg_type == can_common.MSG_MOTOR_STATUS:
             position, speed, current, temperature, error = can_motor.parse_motor_status(msg)
             with state_lock:
@@ -192,15 +196,17 @@ def process_msg(msg: can.Message):
         print(f"\n[CAN] cannot unpack frame 0x{msg.arbitration_id:03X}: {e}")
         return
 
-    # Pair accel and gyro before pushing a sample to the public queue.
+    # Pair accel + gyro (which carries motor_position) before pushing to the
+    # public queue. Tuple order: (time_ms, gyro_xyz, accel_xyz, motor_position).
     if joint["temp_accel"] is not None and joint["temp_gyro"] is not None:
         joint["accumulator"] += target
 
         if joint["accumulator"] >= hz:
             data_tuple = (
                 joint["timestamp"],
-                joint["temp_accel"],
                 joint["temp_gyro"],
+                joint["temp_accel"],
+                joint["temp_motor_pos"],
             )
             with state_lock:
                 joint["queue"].append(data_tuple)
@@ -208,6 +214,7 @@ def process_msg(msg: can.Message):
 
         joint["temp_accel"] = None
         joint["temp_gyro"] = None
+        joint["temp_motor_pos"] = None
 
 
 def can_listener(bus: can.Bus):
@@ -253,6 +260,10 @@ def send_torque(bus: can.Bus, node_id: int, torque_nm: float):
         print(f"[CAN] send_torque to {NODES.get(node_id, node_id)} failed: {e}")
 
 
+def _fmt_pos(pos):
+    return f"{pos:7.2f}" if pos is not None else "    N/A"
+
+
 def print_full_queue(node_id: int):
     data = get_imu_data(node_id)
     label = NODES[node_id]
@@ -261,11 +272,12 @@ def print_full_queue(node_id: int):
         return
 
     print(f"\n[{label}] queue snapshot ({len(data)} samples)")
-    for i, (timestamp, accel, gyro) in enumerate(data, start=1):
+    for i, (timestamp, gyro, accel, motor_pos) in enumerate(data, start=1):
         print(
             f"[{i:3}] Time: {timestamp:.4f} | "
+            f"Gyro: {gyro[0]:6.2f}, {gyro[1]:6.2f}, {gyro[2]:6.2f} | "
             f"Accel: {accel[0]:6.2f}, {accel[1]:6.2f}, {accel[2]:6.2f} | "
-            f"Gyro: {gyro[0]:6.2f}, {gyro[1]:6.2f}, {gyro[2]:6.2f}"
+            f"Pos: {_fmt_pos(motor_pos)} deg"
         )
     print()
 
@@ -277,11 +289,12 @@ def print_latest_imu(node_id: int):
         print(f"[{label}] empty queue, wait a second")
         return
 
-    timestamp, accel, gyro = data[-1]
+    timestamp, gyro, accel, motor_pos = data[-1]
     print(f"\n[{label}] latest IMU sample (queue depth {len(data)})")
-    print(f"  time (ms): {timestamp:.4f}")
-    print(f"  accel:     {accel}")
-    print(f"  gyro:      {gyro}")
+    print(f"  time (ms):     {timestamp:.4f}")
+    print(f"  gyro:          {gyro}")
+    print(f"  accel:         {accel}")
+    print(f"  motor pos deg: {_fmt_pos(motor_pos)}")
     print()
 
 
