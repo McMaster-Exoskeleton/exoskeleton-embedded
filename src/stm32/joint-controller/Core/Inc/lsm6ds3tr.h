@@ -69,3 +69,4 @@ uint8_t lsm6ds3tr_init_dma_read(void);
 LSM6DS3TR_Data_t* lsm6ds3tr_get_data(void);
 
 #endif /* INC_LSM6DS3TR_H_ */
+

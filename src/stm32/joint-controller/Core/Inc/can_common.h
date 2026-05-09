@@ -106,4 +106,13 @@ int can_recv(CanFrame *out);
  */
 uint8_t can_get_my_node_id(void);
 
+/*
+ * Reconfigure Filter 2 (FIFO1) to accept only extended frames whose low
+ * 8 bits match motor_id. Call this after can_common_init() to avoid
+ * receiving feedback from other motors on a shared bus.
+ *
+ * Returns 1 on success, 0 on failure.
+ */
+int can_set_motor_filter(uint8_t motor_id);
+
 #endif /* CAN_COMMON_H */

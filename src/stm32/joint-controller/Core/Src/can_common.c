@@ -7,6 +7,7 @@
  */
 
 #include "can_common.h"
+#include "error_log.h"
 #include <string.h>
 
 /* ── Internal State ── */
@@ -23,7 +24,10 @@ static void rb_init(CanRxRingBuffer *rb) {
 }
 
 static int rb_push(CanRxRingBuffer *rb, const CanFrame *frame) {
-    if (rb->count >= CAN_RX_BUFFER_CAPACITY) return 0;
+    if (rb->count >= CAN_RX_BUFFER_CAPACITY) {
+        log_can_rx_overflow_count++;
+        return 0;
+    }
     rb->buf[rb->head] = *frame;
     rb->head = (rb->head + 1) % CAN_RX_BUFFER_CAPACITY;
     rb->count++;
@@ -47,30 +51,36 @@ int can_common_init(CAN_HandleTypeDef *hcan, uint8_t my_node_id) {
 
     CAN_FilterTypeDef f;
 
-    /* Filter 0: Accept all ESTOP messages (FIFO0) */
+    /* Filter 0: Accept all ESTOP messages (FIFO0).
+     * Mask must include IDE=0 — without it, every extended frame whose
+     * ExtID[28:25] = 0 (which is essentially every VESC packet, since their
+     * packet IDs stay below ~30) accidentally matches the type=0 condition
+     * here and leaks into FIFO0. */
     memset(&f, 0, sizeof(f));
     f.FilterBank           = 0;
     f.FilterMode           = CAN_FILTERMODE_IDMASK;
     f.FilterScale          = CAN_FILTERSCALE_32BIT;
     f.FilterIdHigh         = (CAN_BUILD_ID(CAN_MSG_ESTOP, 0, 0) << 5);
-    f.FilterIdLow          = 0x0000;
-    f.FilterMaskIdHigh     = (0x0780 << 5);  /* match type bits [10:7] only */
-    f.FilterMaskIdLow      = 0x0000;
+    f.FilterIdLow          = 0x0000;        /* IDE bit (bit 2) = 0 -> standard frame */
+    f.FilterMaskIdHigh     = (0x0780 << 5);  /* match type bits [10:7] */
+    f.FilterMaskIdLow      = 0x0004;        /* require IDE = 0 */
     f.FilterFIFOAssignment = CAN_FILTER_FIFO0;
     f.FilterActivation     = ENABLE;
     f.SlaveStartFilterBank = 14;
     if (HAL_CAN_ConfigFilter(hcan, &f) != HAL_OK) return 0;
 
-    /* Filter 1: Accept TORQUE_CMD for my node (FIFO0) */
+    /* Filter 1: Accept TORQUE_CMD for my node (FIFO0).
+     * Same IDE=0 requirement as Filter 0 — without it the filter rejects
+     * VESC frames only by accidental bit alignment, which is fragile. */
     uint16_t torque_id = CAN_BUILD_ID(CAN_MSG_TORQUE_CMD, 0, my_node_id);
     memset(&f, 0, sizeof(f));
     f.FilterBank           = 1;
     f.FilterMode           = CAN_FILTERMODE_IDMASK;
     f.FilterScale          = CAN_FILTERSCALE_32BIT;
     f.FilterIdHigh         = (torque_id << 5);
-    f.FilterIdLow          = 0x0000;
+    f.FilterIdLow          = 0x0000;        /* IDE = 0 -> standard frame */
     f.FilterMaskIdHigh     = (0x078F << 5);  /* match type + dest bits */
-    f.FilterMaskIdLow      = 0x0000;
+    f.FilterMaskIdLow      = 0x0004;        /* require IDE = 0 */
     f.FilterFIFOAssignment = CAN_FILTER_FIFO0;
     f.FilterActivation     = ENABLE;
     f.SlaveStartFilterBank = 14;
@@ -160,6 +170,30 @@ int can_recv(CanFrame *out) {
 
 uint8_t can_get_my_node_id(void) {
     return g_my_node_id;
+}
+
+int can_set_motor_filter(uint8_t motor_id) {
+    if (!g_hcan) return 0;
+
+    /* Extended filter in 32-bit mode:
+     *   FR = (ExtID << 3) | (IDE << 2) | (RTR << 1)
+     * Match bits [7:0] of ExtID = motor_id, and require IDE = 1.
+     *   FilterID   = (motor_id << 3) | 0x04
+     *   FilterMask = (0xFF << 3) | 0x04  = 0x7FC
+     */
+    CAN_FilterTypeDef f;
+    memset(&f, 0, sizeof(f));
+    f.FilterBank           = 2;
+    f.FilterMode           = CAN_FILTERMODE_IDMASK;
+    f.FilterScale          = CAN_FILTERSCALE_32BIT;
+    f.FilterIdHigh         = 0x0000;
+    f.FilterIdLow          = ((uint16_t)motor_id << 3) | 0x0004;
+    f.FilterMaskIdHigh     = 0x0000;
+    f.FilterMaskIdLow      = 0x07FC;
+    f.FilterFIFOAssignment = CAN_FILTER_FIFO1;
+    f.FilterActivation     = ENABLE;
+    f.SlaveStartFilterBank = 14;
+    return (HAL_CAN_ConfigFilter(g_hcan, &f) == HAL_OK);
 }
 
 /* ── ISR Callbacks ── */
