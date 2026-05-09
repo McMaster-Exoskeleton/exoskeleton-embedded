@@ -29,8 +29,8 @@
 #define LIN_ACCEL_SENSITIVITY_4G   0.000122f // g/LSB
 #define ANG_VEL_SENSITIVITY_500DPS 0.0175f   // dps/LSB
 
-// Normal mode for accel+gyro (104Hz ODR) -> Tables 52,55 of lsm6ds3tr-c.pdf
-#define ODR_104HZ 0x40
+// high performance mode for accel+gyro (416Hz ODR) -> Tables 52,55 of lsm6ds3tr-c.pdf
+#define ODR_416HZ 0x60
 
 static I2C_HandleTypeDef *_hi2c;
 static LSM6DS3TR_Data_t   imu_data;
@@ -97,14 +97,14 @@ uint8_t lsm6ds3tr_configure(void)
 	uint8_t temp_data;
 	HAL_StatusTypeDef ret;
 
-	// Accelerometer: 104 Hz ODR, +/-4g
-	temp_data = ODR_104HZ | FS_ACCEL_4G;
+	// Accelerometer: 416 Hz ODR, +/-4g
+	temp_data = ODR_416HZ | FS_ACCEL_4G;
 	ret = HAL_I2C_Mem_Write(_hi2c, LSM6DS3TR_ADDRESS, REG_CTRL1_XL, 1, &temp_data, 1, 100);
 	if (ret != HAL_OK) return 0;
 	imu_data.accel_config = temp_data;
 
-	// Gyroscope: 104 Hz ODR, +/-500 dps
-	temp_data = ODR_104HZ | FS_GYRO_500DPS;
+	// Gyroscope: 416 Hz ODR, +/-500 dps
+	temp_data = ODR_416HZ | FS_GYRO_500DPS;
 	ret = HAL_I2C_Mem_Write(_hi2c, LSM6DS3TR_ADDRESS, REG_CTRL2_G, 1, &temp_data, 1, 100);
 	if (ret != HAL_OK) return 0;
 	imu_data.gyro_config = temp_data;
