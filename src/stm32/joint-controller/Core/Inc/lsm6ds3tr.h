@@ -27,6 +27,9 @@
 #define REG_CTRL3_C			0x12 // BDU, Reset
 #define BDU_ENABLE			0x44 // Block Data Update = 1, IF_INC = 1
 
+// low pass filter coefficient (0.0 to 1.0)
+#define IMU_LPF_ALPHA       0.2f
+
 // #define REG_POW_MAN			107 (come back to this after rewriting .c)
 
 // Output registers

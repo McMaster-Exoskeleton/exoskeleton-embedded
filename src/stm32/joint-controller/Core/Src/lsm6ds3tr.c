@@ -37,6 +37,7 @@ static LSM6DS3TR_Data_t   imu_data;
 
 // 12-byte DMA receive buffer:  [0-5] gyro, [6-11] accel (little-endian)
 static uint8_t dma_rx_buffer[12];
+static uint8_t filter_initialized = 0;
 
 // Calibration offsets (computed once in lsm6ds3tr_calibrate)
 static float offset_gx = 0.0f, offset_gy = 0.0f, offset_gz = 0.0f;
@@ -50,6 +51,7 @@ void lsm6ds3tr_init_driver(I2C_HandleTypeDef *hi2c)
 {
 	_hi2c = hi2c;
 	imu_data.state = SENSOR_STATE_LOST;
+	filter_initialized = 0;
 
 	imu_data.accel.x = 0; imu_data.accel.y = 0; imu_data.accel.z = 0;
 	imu_data.gyro.x  = 0; imu_data.gyro.y  = 0; imu_data.gyro.z  = 0;
@@ -277,16 +279,35 @@ void HAL_I2C_MemRxCpltCallback(I2C_HandleTypeDef *hi2c)
 	float gy = (y_gyro * ANG_VEL_SENSITIVITY_500DPS) - offset_gy;
 	float gz = (z_gyro * ANG_VEL_SENSITIVITY_500DPS) - offset_gz;
 
-	// Update the live imu_data struct (used by CAN_Send_IMU_Data and UART READ)
-	imu_data.accel.filt_x = ax; imu_data.accel.filt_y = ay; imu_data.accel.filt_z = az;
-	imu_data.gyro.filt_x  = gx; imu_data.gyro.filt_y  = gy; imu_data.gyro.filt_z  = gz;
+	// apply first-order IIR low-pass filter: y[n] = alpha*x[n] + (1-alpha)*y[n-1]
+	if (!filter_initialized)
+	{
+		imu_data.accel.filt_x = ax;
+		imu_data.accel.filt_y = ay;
+		imu_data.accel.filt_z = az;
+		imu_data.gyro.filt_x  = gx;
+		imu_data.gyro.filt_y  = gy;
+		imu_data.gyro.filt_z  = gz;
+		filter_initialized = 1;
+	}
+	else
+	{
+		imu_data.accel.filt_x = (IMU_LPF_ALPHA * ax) + ((1.0f - IMU_LPF_ALPHA) * imu_data.accel.filt_x);
+		imu_data.accel.filt_y = (IMU_LPF_ALPHA * ay) + ((1.0f - IMU_LPF_ALPHA) * imu_data.accel.filt_y);
+		imu_data.accel.filt_z = (IMU_LPF_ALPHA * az) + ((1.0f - IMU_LPF_ALPHA) * imu_data.accel.filt_z);
+		imu_data.gyro.filt_x  = (IMU_LPF_ALPHA * gx) + ((1.0f - IMU_LPF_ALPHA) * imu_data.gyro.filt_x);
+		imu_data.gyro.filt_y  = (IMU_LPF_ALPHA * gy) + ((1.0f - IMU_LPF_ALPHA) * imu_data.gyro.filt_y);
+		imu_data.gyro.filt_z  = (IMU_LPF_ALPHA * gz) + ((1.0f - IMU_LPF_ALPHA) * imu_data.gyro.filt_z);
+	}
 
 	imu_data.accel.x = x_accel; imu_data.accel.y = y_accel; imu_data.accel.z = z_accel;
 	imu_data.gyro.x  = x_gyro;  imu_data.gyro.y  = y_gyro;  imu_data.gyro.z  = z_gyro;
 
-	// Push to the circular buffer — READLATEST and READALL serve from here
+	// Push to the circular buffer with the filtered readings
 	if(temp_count % 5 == 0) {
-	    imu_buffer_push(HAL_GetTick(), ax, ay, az, gx, gy, gz);
+	    imu_buffer_push(HAL_GetTick(),
+	                    imu_data.accel.filt_x, imu_data.accel.filt_y, imu_data.accel.filt_z,
+	                    imu_data.gyro.filt_x, imu_data.gyro.filt_y, imu_data.gyro.filt_z);
 	}
 	temp_count++;
 }
