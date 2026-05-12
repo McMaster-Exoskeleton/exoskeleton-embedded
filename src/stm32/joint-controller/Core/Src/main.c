@@ -42,8 +42,8 @@
  * Per-board configuration. Change before flashing each joint.
  *   Left Hip = 1, Right Hip = 2, Left Knee = 3, Right Knee = 4
  */
-#define MY_NODE_ID          2
-#define MY_MOTOR_CAN_ID     106
+#define MY_NODE_ID          4
+#define MY_MOTOR_CAN_ID     107
 
 /* AK70-9 KV60: torque = Kt * gear_ratio * Iq -> Iq = torque / KT_EFFECTIVE */
 #define AK70_9_KT           0.159f
@@ -52,7 +52,7 @@
 
 #define CURRENT_REFRESH_MS  50      /* prevents VESC current-loop timeout */
 #define CURRENT_LIMIT       5.0f    /* test-safe current clamp (A) */
-#define IMU_PERIOD_MS       5       /* 200 Hz IMU send */
+#define IMU_PERIOD_MS       2       /* 500 Hz IMU send */
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -75,6 +75,7 @@ static uint8_t    motor_active       = 0;
 static uint8_t    estop_active       = 0;
 static uint32_t   last_refresh_tick  = 0;
 static uint32_t   ext_rx_count       = 0;
+static uint8_t    origin_set         = 0;   /* zeroed on first VESC feedback frame */
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -170,6 +171,16 @@ int main(void)
       {
         ext_rx_count++;
         motor_receive(&motor_status, rx_frame.data);
+
+        /* First time we hear from the VESC = motor is detected. Zero the
+         * encoder origin so position is reported relative to whatever pose
+         * the joint is in at startup. Mode 0 = temporary (lost on power
+         * cycle), so each boot re-zeros without writing to the VESC's flash. */
+        if (!origin_set)
+        {
+          comm_can_set_origin(MY_MOTOR_CAN_ID, 0);
+          origin_set = 1;
+        }
       }
       else
       {

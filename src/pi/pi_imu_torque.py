@@ -49,12 +49,11 @@ except ImportError:
         sys.path.insert(0, str(REPO_ROOT))
     from apis.can.python import can_common, can_imu, can_motor, can_system
 
-# STM32 streams accel+gyro pairs at 200 Hz (lowered from 500 Hz to reduce CAN
-# bus contention when both motors are active). The ML model wants 187 Hz, so we
+# STM32 streams accel+gyro pairs at 500 Hz. The ML model wants 187 Hz, so we
 # downsample with a Bresenham-style accumulator below: every paired sample adds
 # `target` to an accumulator and emits one entry whenever it crosses `hz`. This
 # spreads the kept samples uniformly without timer jitter.
-hz = 200
+hz = 500
 target = 187
 
 # AK70-9 KV60 effective torque constant (Kt * gear_ratio). Used only to display

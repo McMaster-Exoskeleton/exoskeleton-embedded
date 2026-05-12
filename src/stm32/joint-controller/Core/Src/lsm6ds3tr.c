@@ -32,6 +32,11 @@
 // high performance mode for accel+gyro (416Hz ODR) -> Tables 52,55 of lsm6ds3tr-c.pdf
 #define ODR_416HZ 0x60
 
+// Single-pole IIR lowpass on the filt_* fields. With the IMU read at 500 Hz,
+// alpha = 0.2 gives an effective cutoff around 18 Hz — suppresses high-freq
+// vibration / motor switching noise while keeping <10 ms response time.
+#define IMU_LPF_ALPHA              0.2f
+
 static I2C_HandleTypeDef *_hi2c;
 static LSM6DS3TR_Data_t   imu_data;
 
@@ -279,7 +284,8 @@ void HAL_I2C_MemRxCpltCallback(I2C_HandleTypeDef *hi2c)
 	float gy = (y_gyro * ANG_VEL_SENSITIVITY_500DPS) - offset_gy;
 	float gz = (z_gyro * ANG_VEL_SENSITIVITY_500DPS) - offset_gz;
 
-	// apply first-order IIR low-pass filter: y[n] = alpha*x[n] + (1-alpha)*y[n-1]
+	// Single-pole IIR low-pass filter: y[n] = alpha*x[n] + (1 - alpha)*y[n-1].
+	// Seed with the first raw sample to avoid a ramp-up transient from 0.
 	if (!filter_initialized)
 	{
 		imu_data.accel.filt_x = ax;
