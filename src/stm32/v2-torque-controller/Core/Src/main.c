@@ -53,8 +53,8 @@
  * Per-board configuration. Change before flashing each joint.
  *   Left Hip = 1, Right Hip = 2, Left Knee = 3, Right Knee = 4
  */
-#define MY_NODE_ID          3
-#define MY_MOTOR_CAN_ID     106
+#define MY_NODE_ID          1
+#define MY_MOTOR_CAN_ID     104
 
 /* AK70-9 KV60: torque = Kt * gear_ratio * Iq -> Iq = torque / KT_EFFECTIVE */
 #define AK70_9_KT           0.159f
@@ -87,6 +87,7 @@ static uint8_t    origin_set         = 0;   /* zeroed on first VESC feedback fra
 void SystemClock_Config(void);
 /* USER CODE BEGIN PFP */
 static void CAN_Send_IMU_Data(void);
+static void CAN_Send_Heartbeat(uint32_t counter);
 static void fault_blink_forever(uint32_t period_ms);
 /* USER CODE END PFP */
 
@@ -222,11 +223,17 @@ int main(void)
       lsm6ds3tr_init_dma_read();
     }
 
-    /* -- 1 Hz heartbeat: toggle LED so an operator can see "running" without
-     *    hooking up a bus analyzer. -- */
+    /* -- 1 Hz heartbeat: toggle LED + send a known CAN frame.
+     *    The heartbeat frame is the diagnostic for "is the firmware
+     *    actually putting bits on the bus?". It does not depend on the
+     *    IMU pipeline, motor state, or CAN RX -- if candump on the Pi
+     *    sees the heartbeat ID but not the IMU IDs, the IMU side is
+     *    broken; if it sees nothing at all, the bus is broken. -- */
     if (HAL_GetTick() - last_heartbeat_tick >= HEARTBEAT_PERIOD_MS)
     {
       HAL_GPIO_TogglePin(LED1_GPIO_Port, LED1_Pin);
+      static uint32_t heartbeat_counter = 0;
+      CAN_Send_Heartbeat(heartbeat_counter++);
       last_heartbeat_tick = HAL_GetTick();
     }
 
@@ -315,6 +322,41 @@ static void CAN_Send_IMU_Data(void)
 
   can_send_imu_accel(MY_NODE_ID, ax, ay, az);
   can_send_imu_gyro(MY_NODE_ID, gx, gy, gz, motor_status.position);
+}
+
+/**
+  * @brief Diagnostic heartbeat frame, sent at 1 Hz alongside the LED toggle.
+  *
+  * Wire format (DLC 8, big-endian):
+  *   bytes 0-3 : monotonically increasing counter (1 per heartbeat)
+  *   bytes 4-7 : HAL_GetTick() snapshot in ms (uptime)
+  *
+  * Standard ID = (CAN_MSG_HEARTBEAT << 7) | (MY_NODE_ID << 4) | NODE_PI
+  *   For MY_NODE_ID=3: id = (5<<7)|(3<<4)|0 = 0x2B0
+  *
+  * Test on the Pi:
+  *   candump can1 -t a | grep 2B0
+  * If you see one line every ~500 ms, firmware-to-bus is working and the
+  * problem is somewhere downstream (script filter, IMU pipeline, etc.).
+  * If you see nothing, the problem is upstream (transceiver, wiring,
+  * termination, or bitrate mismatch).
+  */
+static void CAN_Send_Heartbeat(uint32_t counter)
+{
+  uint32_t uptime = HAL_GetTick();
+  uint8_t  data[8];
+
+  data[0] = (uint8_t)(counter >> 24);
+  data[1] = (uint8_t)(counter >> 16);
+  data[2] = (uint8_t)(counter >> 8);
+  data[3] = (uint8_t)(counter);
+  data[4] = (uint8_t)(uptime >> 24);
+  data[5] = (uint8_t)(uptime >> 16);
+  data[6] = (uint8_t)(uptime >> 8);
+  data[7] = (uint8_t)(uptime);
+
+  uint16_t id = CAN_BUILD_ID(CAN_MSG_HEARTBEAT, MY_NODE_ID, CAN_NODE_PI);
+  can_send_std(id, data, 8);
 }
 
 /**
