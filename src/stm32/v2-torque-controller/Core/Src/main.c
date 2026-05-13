@@ -47,8 +47,8 @@
  * Per-board configuration. Change before flashing each joint.
  *   Left Hip = 1, Right Hip = 2, Left Knee = 3, Right Knee = 4
  */
-#define MY_NODE_ID          1
-#define MY_MOTOR_CAN_ID     104
+#define MY_NODE_ID          3
+#define MY_MOTOR_CAN_ID     106
 
 /* AK70-9 KV60: torque = Kt * gear_ratio * Iq -> Iq = torque / KT_EFFECTIVE */
 #define AK70_9_KT           0.159f
