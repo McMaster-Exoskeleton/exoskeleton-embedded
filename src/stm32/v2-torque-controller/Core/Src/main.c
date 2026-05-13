@@ -5,30 +5,36 @@
   * @brief          : Main program body
   *
   * v2-torque-controller — joint-controller port for the custom-PCB STM32F446RET6
-  * board. Drives one VESC over CAN, streams IMU + motor position back over CAN,
-  * and accepts torque commands or an estop from the Pi.
+  * board. Drives one VESC over CAN and streams IMU + motor position back over
+  * CAN. Accepts torque commands or an estop from the Pi.
+  *
+  * No UART on the v2 PCB — all status comes out over CAN, plus a single LED
+  * (PC13) used as a coarse boot/run indicator:
+  *   - Solid OFF after power-up, briefly:  MCU running but pre-init
+  *   - Solid ON for ~0.5 s during boot:    init in progress
+  *   - Slow blink (1 Hz, 50% duty):        running normally
+  *   - Fast blink (5 Hz):                  IMU not found at boot
+  *   - Solid ON forever:                   CAN init failed at boot
   *
   * Differs from the Nucleo joint-controller mainly in:
   *   - HSE 8 MHz crystal + PLL -> 180 MHz (vs. HSI -> 84 MHz)
   *   - I2C1 on PB8/PB9 (vs. I2C3 on PA8/PC9)
   *   - I2C1_RX DMA on DMA1 Stream 0 (vs. I2C3_RX on DMA1 Stream 1)
   *   - Status LED on PC13 (vs. PA5 on Nucleo)
-  *   - No user button
+  *   - No user button, no UART debug console
   ******************************************************************************
   */
 /* USER CODE END Header */
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
 #include "can.h"
+#include "dma.h"
 #include "i2c.h"
 #include "usart.h"
 #include "gpio.h"
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-#include <stdio.h>
-#include <string.h>
-#include <stdarg.h>
 #include "lsm6ds3tr.h"
 #include "can_common.h"
 #include "can_imu.h"
@@ -58,6 +64,7 @@
 #define CURRENT_REFRESH_MS  50      /* prevents VESC current-loop timeout */
 #define CURRENT_LIMIT       0.5f    /* test-safe current clamp (A) */
 #define IMU_PERIOD_MS       2       /* 500 Hz IMU send */
+#define HEARTBEAT_PERIOD_MS 500     /* 1 Hz LED blink, 50% duty */
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -73,15 +80,14 @@ static float      active_current     = 0.0f;
 static uint8_t    motor_active       = 0;
 static uint8_t    estop_active       = 0;
 static uint32_t   last_refresh_tick  = 0;
-static uint32_t   ext_rx_count       = 0;
 static uint8_t    origin_set         = 0;   /* zeroed on first VESC feedback frame */
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
 void SystemClock_Config(void);
-static void MX_DMA_Init(void);
 /* USER CODE BEGIN PFP */
 static void CAN_Send_IMU_Data(void);
+static void fault_blink_forever(uint32_t period_ms);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -91,21 +97,6 @@ static float clampf(float val, float lo, float hi)
   if (val < lo) return lo;
   if (val > hi) return hi;
   return val;
-}
-
-static void debug_print(const char *msg)
-{
-  HAL_UART_Transmit(&huart2, (uint8_t *)msg, (uint16_t)strlen(msg), 50);
-}
-
-static void debug_printf(const char *fmt, ...)
-{
-  char buf[128];
-  va_list args;
-  va_start(args, fmt);
-  int n = vsnprintf(buf, sizeof(buf), fmt, args);
-  va_end(args);
-  if (n > 0) HAL_UART_Transmit(&huart2, (uint8_t *)buf, (uint16_t)n, 50);
 }
 /* USER CODE END 0 */
 
@@ -136,55 +127,47 @@ int main(void)
 
   /* USER CODE END SysInit */
 
-  /* Initialize all configured peripherals.
-   *
-   * MX_DMA_Init MUST run before MX_I2C1_Init: HAL_I2C_MspInit calls
-   * __HAL_LINKDMA which assumes the DMA controller's clock is already on. */
+  /* Initialize all configured peripherals */
   MX_GPIO_Init();
   MX_DMA_Init();
   MX_CAN1_Init();
   MX_I2C1_Init();
   MX_USART2_UART_Init();
-
   /* USER CODE BEGIN 2 */
+  /* Brief LED-on during init so a quick visual confirms the MCU is alive. */
+  HAL_GPIO_WritePin(LED1_GPIO_Port, LED1_Pin, GPIO_PIN_SET);
+
   if (!can_common_init(&hcan1, MY_NODE_ID))
   {
-    debug_print("CAN INIT FAILED\r\n");
+    /* CAN INIT FAILED -> LED solid ON forever. */
     HAL_GPIO_WritePin(LED1_GPIO_Port, LED1_Pin, GPIO_PIN_SET);
     while (1) {}
   }
   can_set_motor_filter(MY_MOTOR_CAN_ID);
-  debug_printf("CAN OK node=%u motor=%u\r\n",
-               (unsigned)MY_NODE_ID, (unsigned)MY_MOTOR_CAN_ID);
 
   lsm6ds3tr_init_driver(&hi2c1);
   if (!lsm6ds3tr_check_connection())
   {
-    debug_print("IMU NOT FOUND\r\n");
-    HAL_GPIO_WritePin(LED1_GPIO_Port, LED1_Pin, GPIO_PIN_SET);
-    while (1) {}
+    /* IMU NOT FOUND -> LED fast blink forever (5 Hz, 100 ms toggle). */
+    fault_blink_forever(100);
   }
   lsm6ds3tr_calibrate();
-  debug_print("READY\r\n");
 
-  uint32_t last_imu_tick    = HAL_GetTick();
-  uint32_t last_status_tick = HAL_GetTick();
+  HAL_GPIO_WritePin(LED1_GPIO_Port, LED1_Pin, GPIO_PIN_RESET);
+  uint32_t last_imu_tick       = HAL_GetTick();
+  uint32_t last_heartbeat_tick = HAL_GetTick();
   /* USER CODE END 2 */
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
   while (1)
   {
-    /* -- Drain CAN RX --
-     * NO per-frame logging. At two nodes with VESC traffic, anything
-     * faster than 1 Hz over UART blocks the main loop and breaks the
-     * 50 ms motor refresh. */
+    /* -- Drain CAN RX -- */
     CanFrame rx_frame;
     while (can_recv(&rx_frame))
     {
       if (rx_frame.is_extended)
       {
-        ext_rx_count++;
         motor_receive(&motor_status, rx_frame.data);
 
         /* First time we hear from the VESC = motor is detected. Zero the
@@ -239,17 +222,12 @@ int main(void)
       lsm6ds3tr_init_dma_read();
     }
 
-    /* -- 1 Hz status dump -- */
-    if (HAL_GetTick() - last_status_tick >= 1000)
+    /* -- 1 Hz heartbeat: toggle LED so an operator can see "running" without
+     *    hooking up a bus analyzer. -- */
+    if (HAL_GetTick() - last_heartbeat_tick >= HEARTBEAT_PERIOD_MS)
     {
-      debug_printf("[STATUS] active=%d estop=%d cmd=%.3fA motor_rx=%lu | "
-                   "pos=%.1f spd=%.0f cur=%.2fA temp=%dC err=%d\r\n",
-                   motor_active, estop_active, active_current,
-                   (unsigned long)ext_rx_count,
-                   motor_status.position, motor_status.speed,
-                   motor_status.current, motor_status.temperature,
-                   motor_status.error);
-      last_status_tick = HAL_GetTick();
+      HAL_GPIO_TogglePin(LED1_GPIO_Port, LED1_Pin);
+      last_heartbeat_tick = HAL_GetTick();
     }
 
     /* USER CODE END WHILE */
@@ -261,12 +239,6 @@ int main(void)
 
 /**
   * @brief System Clock Configuration
-  *
-  * HSE 8 MHz crystal -> PLL -> 180 MHz SYSCLK.
-  *   PLLM=8 (1 MHz ref), PLLN=360 (360 MHz VCO), PLLP=2 (180 MHz)
-  *   AHB /1 = 180 MHz, APB1 /4 = 45 MHz, APB2 /2 = 90 MHz
-  * Over-drive must be enabled before selecting PLL @ 180 MHz.
-  *
   * @retval None
   */
 void SystemClock_Config(void)
@@ -318,21 +290,6 @@ void SystemClock_Config(void)
   }
 }
 
-/**
-  * @brief DMA controller bring-up.
-  *
-  * Enables the DMA1 clock and the NVIC line for the I2C1 RX stream
-  * (Stream 0). The actual stream config lives in HAL_I2C_MspInit so
-  * deinit/reinit of I2C1 also tears down its DMA cleanly.
-  */
-static void MX_DMA_Init(void)
-{
-  __HAL_RCC_DMA1_CLK_ENABLE();
-
-  HAL_NVIC_SetPriority(DMA1_Stream0_IRQn, 0, 0);
-  HAL_NVIC_EnableIRQ(DMA1_Stream0_IRQn);
-}
-
 /* USER CODE BEGIN 4 */
 
 /**
@@ -358,6 +315,20 @@ static void CAN_Send_IMU_Data(void)
 
   can_send_imu_accel(MY_NODE_ID, ax, ay, az);
   can_send_imu_gyro(MY_NODE_ID, gx, gy, gz, motor_status.position);
+}
+
+/**
+  * @brief Park here forever, toggling the status LED at a fixed rate.
+  *        Used as the fault indicator for boot-time failures so an operator
+  *        can identify the failure mode visually without serial.
+  */
+static void fault_blink_forever(uint32_t period_ms)
+{
+  while (1)
+  {
+    HAL_GPIO_TogglePin(LED1_GPIO_Port, LED1_Pin);
+    HAL_Delay(period_ms);
+  }
 }
 
 /* USER CODE END 4 */

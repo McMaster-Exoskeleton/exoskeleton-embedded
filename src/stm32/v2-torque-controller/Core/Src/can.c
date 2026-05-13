@@ -38,7 +38,7 @@ void MX_CAN1_Init(void)
 
   /* USER CODE END CAN1_Init 1 */
   hcan1.Instance = CAN1;
-  hcan1.Init.Prescaler = 5;
+  hcan1.Init.Prescaler = 10;
   hcan1.Init.Mode = CAN_MODE_NORMAL;
   hcan1.Init.SyncJumpWidth = CAN_SJW_1TQ;
   hcan1.Init.TimeSeg1 = CAN_BS1_6TQ;
@@ -46,7 +46,7 @@ void MX_CAN1_Init(void)
   hcan1.Init.TimeTriggeredMode = DISABLE;
   hcan1.Init.AutoBusOff = ENABLE;
   hcan1.Init.AutoWakeUp = DISABLE;
-  hcan1.Init.AutoRetransmission = ENABLE;
+  hcan1.Init.AutoRetransmission = DISABLE;
   hcan1.Init.ReceiveFifoLocked = DISABLE;
   hcan1.Init.TransmitFifoPriority = DISABLE;
   if (HAL_CAN_Init(&hcan1) != HAL_OK)
@@ -55,6 +55,21 @@ void MX_CAN1_Init(void)
   }
   /* USER CODE BEGIN CAN1_Init 2 */
 
+  /* CubeMX regen keeps reverting AutoRetransmission to DISABLE even though
+   * the .ioc has it enabled. Override the MCR bits directly here so the
+   * runtime behaviour is correct regardless of how CubeMX regenerates the
+   * Init block above:
+   *   NART = 0  -> automatic re-transmission ON  (resend after error frame)
+   *   ABOM = 1  -> automatic bus-off recovery ON (auto-restart after 128*11 recessive bits)
+   * MCR is write-protected outside INRQ mode, so put the controller back
+   * into init mode briefly, flip the bits, then leave init.
+   */
+  hcan1.Instance->MCR |=  CAN_MCR_INRQ;
+  while ((hcan1.Instance->MSR & CAN_MSR_INAK) == 0) { /* spin to enter init */ }
+  hcan1.Instance->MCR &= ~CAN_MCR_NART;     /* enable auto-retransmit */
+  hcan1.Instance->MCR |=  CAN_MCR_ABOM;     /* enable auto bus-off recovery */
+  hcan1.Instance->MCR &= ~CAN_MCR_INRQ;
+  while ((hcan1.Instance->MSR & CAN_MSR_INAK) != 0) { /* spin to leave init */ }
   /* USER CODE END CAN1_Init 2 */
 
 }

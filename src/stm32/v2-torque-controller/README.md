@@ -131,7 +131,22 @@ To flash without debugging (one-shot programming): **Run As → STM32 C/C++ Appl
 4. **PCB pull-ups.** SWDIO needs a weak pull-up (~40 kΩ). The chip has one internal, so a missing external pull-up is usually OK on a clean PCB but can cause flaky enumeration on noisy boards — add a 10 kΩ external if needed.
 5. **Read protection (RDP).** A fresh chip ships at RDP=0 (unprotected). If a previous flash accidentally raised RDP to level 1, the ST-LINK will connect but flash writes will fail silently. Use `STM32CubeProgrammer` → Option Bytes → set RDP back to AA to recover.
 
+---
+
+## Step 5 — Diagnostic LED (PC13)
+
+The v2 PCB does not break out USART2, so there is **no serial console**. The single status LED on PC13 is the only out-of-band signal the firmware uses to tell you what state the board is in:
+
+| LED behavior        | Meaning                                                              |
+|---------------------|----------------------------------------------------------------------|
+| Solid OFF           | MCU not running (no power, NRST held low, or hung pre-`HAL_Init`)    |
+| Solid ON forever    | **`CAN INIT FAILED`** at boot (HAL filter setup rejected — almost never happens) |
+| Fast blink (5 Hz)   | **`IMU NOT FOUND`** at boot (WHO_AM_I read failed; check I²C wiring, SA0 strap, IMU power) |
+| Slow blink (1 Hz)   | Running normally — IMU connected, main loop ticking                  |
+
+There is no other indication. If the LED is doing the slow blink and the Pi still sees no frames from this node, the problem is on the CAN bus itself (transceiver, wiring, termination, or the Pi's interface), not the firmware.
+
 ### When SWO trace would help (optional)
 
-The `.ioc` does **not** reserve PB3 for SWO (`SYS_JTDO-SWO`). If you want printf-via-SWO instead of UART, in CubeMX go to `SYS` → set Debug to **Trace Asynchronous SW**. That reserves PB3 and CubeIDE's launch config can then route stdout through ST-LINK's SWV viewer. Until you do this, all debug output goes through USART2 (PA2/PA3) as it does today.
+The `.ioc` does **not** reserve PB3 for SWO (`SYS_JTDO-SWO`). If you want richer debug output without re-spinning the PCB, you can re-enable SWO printf via the ST-LINK: in CubeMX go to `SYS` → set Debug to **Trace Asynchronous SW**, then in `Core/Inc/main.h` retarget `_write` to push to the ITM stimulus port. CubeIDE's SWV viewer will display the stream live without needing a UART pin.
 

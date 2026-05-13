@@ -83,7 +83,7 @@ uint8_t lsm6ds3tr_check_connection(void)
 	HAL_StatusTypeDef ret = HAL_I2C_Mem_Read(
 		_hi2c, LSM6DS3TR_ADDRESS, REG_WHO_AM_I, 1, &who_am_i, 1, 100);
 
-	if (ret == HAL_OK && who_am_i == WHO_AM_I_VAL)
+	if (ret == HAL_OK && WHO_AM_I_VALID(who_am_i))
 	{
 		imu_data.state = SENSOR_STATE_CONNECTED;
 		return 1;

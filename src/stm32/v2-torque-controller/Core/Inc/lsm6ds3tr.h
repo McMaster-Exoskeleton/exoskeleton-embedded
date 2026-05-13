@@ -19,7 +19,15 @@
 
 // Check connection (lsm6ds3tr_check_connection)
 #define REG_WHO_AM_I 		0x0F
-#define WHO_AM_I_VAL 		0x6C // expected WHO_AM_I response for LSM6DS3TR-C (verify)
+// The driver accepts both ST IMUs the v1/v2 boards have shipped with:
+//   LSM6DS3TR-C: WHO_AM_I = 0x6A  (Nucleo joint-controller)
+//   LSM6DSO32:   WHO_AM_I = 0x6C  (custom v2 PCB, per schematic)
+// Register map, ODR codes, and sensitivities at the configured ranges
+// (+/-4g and +/-500dps) are identical between the two parts at the bits
+// we touch, so accepting either value lets the same firmware drive both.
+#define WHO_AM_I_VAL_DS3    0x6A
+#define WHO_AM_I_VAL_DSO32  0x6C
+#define WHO_AM_I_VALID(v)   ((v) == WHO_AM_I_VAL_DS3 || (v) == WHO_AM_I_VAL_DSO32)
 
 // Control registers
 #define REG_CTRL1_XL		0x10 // Accelerometer control register
