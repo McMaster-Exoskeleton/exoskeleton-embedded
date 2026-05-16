@@ -181,9 +181,22 @@ int main(void)
           comm_can_set_origin(MY_MOTOR_CAN_ID, 0);
           origin_set = 1;
         }
+
+        
       }
       else
       {
+
+        if (rx_frame.id == CAN_ID_GLOBAL_RESET)
+        {
+          for (int i = 0; i < 10; i++)
+          {
+            HAL_GPIO_TogglePin(LD2_GPIO_Port, LD2_Pin);
+            HAL_Delay(50);
+          }
+          HAL_NVIC_SystemReset();
+        }
+        
         uint8_t msg_type = can_get_msg_type((uint16_t)rx_frame.id);
 
         if (msg_type == CAN_MSG_ESTOP)

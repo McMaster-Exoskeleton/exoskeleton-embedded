@@ -21,6 +21,8 @@
 #define CAN_NODE_LEFT_KNEE   3
 #define CAN_NODE_RIGHT_KNEE  4
 
+#define CAN_ID_GLOBAL_RESET 0x67
+
 /* ── Message Type IDs (ordered by CAN priority) ── */
 #define CAN_MSG_ESTOP        0x0
 #define CAN_MSG_TORQUE_CMD   0x1
