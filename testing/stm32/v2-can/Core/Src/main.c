@@ -73,9 +73,7 @@ int main(void)
 
   /* Reset of all peripherals, Initializes the Flash interface and the Systick. */
   HAL_Init();
-  if (HAL_CAN_Start(&hcan1) != HAL_OK) {
-      Error_Handler();
-  }
+
 
   /* USER CODE BEGIN Init */
   uint32_t last_can_tx_tick = HAL_GetTick();
@@ -93,6 +91,7 @@ int main(void)
   MX_GPIO_Init();
   MX_CAN1_Init();
 
+
   // All-pass CAN filter
   CAN_FilterTypeDef filter = {0};
   filter.FilterBank           = 0;
@@ -109,6 +108,7 @@ int main(void)
 
   /* USER CODE BEGIN 2 */
   uint8_t data[8] = {0xDE, 0xAD, 0xBE, 0xEF, 0, 0, 0, 0};
+
   if(HAL_CAN_Start(&hcan1) != HAL_OK) {
 	  Error_Handler();
   }
@@ -120,11 +120,11 @@ int main(void)
   /* USER CODE BEGIN WHILE */
   while (1)
   {
-	  if((HAL_GetTick() - last_can_tx_tick) >= CAN_TX_INTERVAL_MS)
-		{
-		  last_can_tx_tick = HAL_GetTick();
-		  CAN_Send_Frame(data);
-		}
+	if((HAL_GetTick() - last_can_tx_tick) >= CAN_TX_INTERVAL_MS)
+	{
+	  last_can_tx_tick = HAL_GetTick();
+	  CAN_Send_Frame(data);
+	}
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
