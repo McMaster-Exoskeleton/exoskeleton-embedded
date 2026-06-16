@@ -4,7 +4,7 @@
  * ESTOP message encoding/decoding.
  */
 
-#include "can_system.h"
+#include "../../Inc/CAN/can_system.h"
 
 int can_send_estop(uint8_t src_node, uint8_t reason) {
     uint16_t id = CAN_BUILD_ID(CAN_MSG_ESTOP, src_node, 0);

@@ -37,7 +37,7 @@ def parse_can_id(can_id: int) -> tuple[int, int, int]:
     return msg_type, src_node, dest
 
 
-def create_bus(channel: str = "can0") -> can.Bus:
+def create_bus(channel: str = "can1") -> can.Bus:
     """
     Create a SocketCAN bus interface.
     Bitrate must be configured at the OS level before calling this:

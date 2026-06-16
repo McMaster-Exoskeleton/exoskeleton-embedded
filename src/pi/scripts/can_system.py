@@ -7,7 +7,7 @@ Mirrors the C API in can_system.h.
 
 import struct
 import can
-from . import can_common
+import can_common
 
 # ── ESTOP Reason Codes ──
 ESTOP_MANUAL      = 0

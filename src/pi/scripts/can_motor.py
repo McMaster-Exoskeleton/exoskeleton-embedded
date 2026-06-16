@@ -7,7 +7,7 @@ Mirrors the C API in can_motor.h.
 
 import struct
 import can
-from . import can_common
+import can_common
 
 
 def send_torque_cmd(bus: can.Bus, dest_node: int, torque_nm: float,
@@ -18,9 +18,12 @@ def send_torque_cmd(bus: can.Bus, dest_node: int, torque_nm: float,
     src_node defaults to NODE_PI (0) but can be overridden for testing.
     """
     can_id = can_common.build_can_id(can_common.MSG_TORQUE_CMD, src_node, dest_node)
-    data = struct.pack('<h', int(torque_nm * 1000))
+    raw = int(torque_nm * 1000)
+    data = struct.pack('<h', raw)
+    print(f"  [DEBUG] CAN ID=0x{can_id:03X} data={data.hex()} raw={raw}")
     msg = can.Message(arbitration_id=can_id, data=data, is_extended_id=False)
     bus.send(msg)
+    print(f"  [DEBUG] send OK")
 
 
 def parse_torque_cmd(msg: can.Message) -> float:
