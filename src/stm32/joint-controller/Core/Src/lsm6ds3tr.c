@@ -29,14 +29,20 @@
 #define LIN_ACCEL_SENSITIVITY_4G   0.000122f // g/LSB
 #define ANG_VEL_SENSITIVITY_500DPS 0.0175f   // dps/LSB
 
-// Normal mode for accel+gyro (104Hz ODR) -> Tables 52,55 of lsm6ds3tr-c.pdf
-#define ODR_104HZ 0x40
+// high performance mode for accel+gyro (416Hz ODR) -> Tables 52,55 of lsm6ds3tr-c.pdf
+#define ODR_416HZ 0x60
+
+// Single-pole IIR lowpass on the filt_* fields. With the IMU read at 500 Hz,
+// alpha = 0.2 gives an effective cutoff around 18 Hz — suppresses high-freq
+// vibration / motor switching noise while keeping <10 ms response time.
+#define IMU_LPF_ALPHA              0.2f
 
 static I2C_HandleTypeDef *_hi2c;
 static LSM6DS3TR_Data_t   imu_data;
 
 // 12-byte DMA receive buffer:  [0-5] gyro, [6-11] accel (little-endian)
 static uint8_t dma_rx_buffer[12];
+static uint8_t filter_initialized = 0;
 
 // Calibration offsets (computed once in lsm6ds3tr_calibrate)
 static float offset_gx = 0.0f, offset_gy = 0.0f, offset_gz = 0.0f;
@@ -50,6 +56,7 @@ void lsm6ds3tr_init_driver(I2C_HandleTypeDef *hi2c)
 {
 	_hi2c = hi2c;
 	imu_data.state = SENSOR_STATE_LOST;
+	filter_initialized = 0;
 
 	imu_data.accel.x = 0; imu_data.accel.y = 0; imu_data.accel.z = 0;
 	imu_data.gyro.x  = 0; imu_data.gyro.y  = 0; imu_data.gyro.z  = 0;
@@ -95,14 +102,14 @@ uint8_t lsm6ds3tr_configure(void)
 	uint8_t temp_data;
 	HAL_StatusTypeDef ret;
 
-	// Accelerometer: 104 Hz ODR, +/-4g
-	temp_data = ODR_104HZ | FS_ACCEL_4G;
+	// Accelerometer: 416 Hz ODR, +/-4g
+	temp_data = ODR_416HZ | FS_ACCEL_4G;
 	ret = HAL_I2C_Mem_Write(_hi2c, LSM6DS3TR_ADDRESS, REG_CTRL1_XL, 1, &temp_data, 1, 100);
 	if (ret != HAL_OK) return 0;
 	imu_data.accel_config = temp_data;
 
-	// Gyroscope: 104 Hz ODR, +/-500 dps
-	temp_data = ODR_104HZ | FS_GYRO_500DPS;
+	// Gyroscope: 416 Hz ODR, +/-500 dps
+	temp_data = ODR_416HZ | FS_GYRO_500DPS;
 	ret = HAL_I2C_Mem_Write(_hi2c, LSM6DS3TR_ADDRESS, REG_CTRL2_G, 1, &temp_data, 1, 100);
 	if (ret != HAL_OK) return 0;
 	imu_data.gyro_config = temp_data;
@@ -277,16 +284,36 @@ void HAL_I2C_MemRxCpltCallback(I2C_HandleTypeDef *hi2c)
 	float gy = (y_gyro * ANG_VEL_SENSITIVITY_500DPS) - offset_gy;
 	float gz = (z_gyro * ANG_VEL_SENSITIVITY_500DPS) - offset_gz;
 
-	// Update the live imu_data struct (used by CAN_Send_IMU_Data and UART READ)
-	imu_data.accel.filt_x = ax; imu_data.accel.filt_y = ay; imu_data.accel.filt_z = az;
-	imu_data.gyro.filt_x  = gx; imu_data.gyro.filt_y  = gy; imu_data.gyro.filt_z  = gz;
+	// Single-pole IIR low-pass filter: y[n] = alpha*x[n] + (1 - alpha)*y[n-1].
+	// Seed with the first raw sample to avoid a ramp-up transient from 0.
+	if (!filter_initialized)
+	{
+		imu_data.accel.filt_x = ax;
+		imu_data.accel.filt_y = ay;
+		imu_data.accel.filt_z = az;
+		imu_data.gyro.filt_x  = gx;
+		imu_data.gyro.filt_y  = gy;
+		imu_data.gyro.filt_z  = gz;
+		filter_initialized = 1;
+	}
+	else
+	{
+		imu_data.accel.filt_x = (IMU_LPF_ALPHA * ax) + ((1.0f - IMU_LPF_ALPHA) * imu_data.accel.filt_x);
+		imu_data.accel.filt_y = (IMU_LPF_ALPHA * ay) + ((1.0f - IMU_LPF_ALPHA) * imu_data.accel.filt_y);
+		imu_data.accel.filt_z = (IMU_LPF_ALPHA * az) + ((1.0f - IMU_LPF_ALPHA) * imu_data.accel.filt_z);
+		imu_data.gyro.filt_x  = (IMU_LPF_ALPHA * gx) + ((1.0f - IMU_LPF_ALPHA) * imu_data.gyro.filt_x);
+		imu_data.gyro.filt_y  = (IMU_LPF_ALPHA * gy) + ((1.0f - IMU_LPF_ALPHA) * imu_data.gyro.filt_y);
+		imu_data.gyro.filt_z  = (IMU_LPF_ALPHA * gz) + ((1.0f - IMU_LPF_ALPHA) * imu_data.gyro.filt_z);
+	}
 
 	imu_data.accel.x = x_accel; imu_data.accel.y = y_accel; imu_data.accel.z = z_accel;
 	imu_data.gyro.x  = x_gyro;  imu_data.gyro.y  = y_gyro;  imu_data.gyro.z  = z_gyro;
 
-	// Push to the circular buffer — READLATEST and READALL serve from here
+	// Push to the circular buffer with the filtered readings
 	if(temp_count % 5 == 0) {
-	    imu_buffer_push(HAL_GetTick(), ax, ay, az, gx, gy, gz);
+	    imu_buffer_push(HAL_GetTick(),
+	                    imu_data.accel.filt_x, imu_data.accel.filt_y, imu_data.accel.filt_z,
+	                    imu_data.gyro.filt_x, imu_data.gyro.filt_y, imu_data.gyro.filt_z);
 	}
 	temp_count++;
 }

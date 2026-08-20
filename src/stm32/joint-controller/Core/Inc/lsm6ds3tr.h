@@ -27,24 +27,14 @@
 #define REG_CTRL3_C			0x12 // BDU, Reset
 #define BDU_ENABLE			0x44 // Block Data Update = 1, IF_INC = 1
 
+// low pass filter coefficient (0.0 to 1.0)
+#define IMU_LPF_ALPHA       0.2f
+
 // #define REG_POW_MAN			107 (come back to this after rewriting .c)
 
 // Output registers
 #define REG_OUTX_L_G		0x22 // gyro x-axis LB (starts at 0x22 and goes to 0x27 for gyro)
 #define REG_OUTX_L_XL		0x28 // accel x-axis LB (starts at 0x28 and goes to 0x2D for accel)
-
-// CAN Standard IDs
-#define ACCEL_HIP_L			0x123
-#define GYRO_HIP_L			0x124
-
-#define ACCEL_HIP_R			0x125
-#define GYRO_HIP_R			0x126
-
-#define ACCEL_KNEE_L		0x127
-#define GYRO_KNEE_L			0x128
-
-#define ACCEL_KNEE_R		0x129
-#define GYRO_KNEE_R			0x130
 
 typedef enum
 {
@@ -82,3 +72,4 @@ uint8_t lsm6ds3tr_init_dma_read(void);
 LSM6DS3TR_Data_t* lsm6ds3tr_get_data(void);
 
 #endif /* INC_LSM6DS3TR_H_ */
+
